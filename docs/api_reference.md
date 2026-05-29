@@ -129,7 +129,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `componentName` _[ComponentName](#componentname)_ | componentName identifies which external-secrets component this configuration applies to.<br />Valid component names: ExternalSecretsCoreController, Webhook, CertController, BitwardenSDKServer. |  | Enum: [ExternalSecretsCoreController Webhook CertController BitwardenSDKServer] <br /> |
 | `deploymentConfigs` _[DeploymentConfig](#deploymentconfig)_ | deploymentConfigs specifies overrides for the Kubernetes Deployment resource of this component. |  |  |
-| `overrideEnv` _[EnvVar](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.32/#envvar-v1-core) array_ | overrideEnv specifies custom environment variables for this component's container. These are merged with operator-managed environment variables, with user-defined values taking precedence.<br />Keys starting with 'HOSTNAME', 'KUBERNETES_', or 'EXTERNAL_SECRETS_' are reserved and will be rejected. |  | MaxItems: 50 <br /> |
+| `overrideEnv` _[EnvVar](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.32/#envvar-v1-core) array_ | overrideEnv specifies custom environment variables for this component's container. These are merged with operator-managed environment variables, with user-defined values taking precedence.<br />Names starting with 'KUBERNETES_' or 'EXTERNAL_SECRETS_' are reserved prefixes and will be rejected.<br />The exact names 'HOSTNAME', 'SSL_CERT_DIR', and 'SSL_CERT_FILE' are also reserved. |  | MaxItems: 50 <br /> |
 
 
 #### ComponentName
@@ -186,6 +186,23 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.32/#condition-v1-meta) array_ | conditions holds information of the current state of deployment. |  |  |
 
 
+#### ConfigMapKeyReference
+
+
+
+ConfigMapKeyReference refers to a specific key within a ConfigMap.
+
+
+
+_Appears in:_
+- [ControllerConfig](#controllerconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | name of the ConfigMap resource being referred to. |  | MaxLength: 253 <br />MinLength: 1 <br /> |
+| `key` _string_ | key is the specific key in the ConfigMap to be utilized.<br />When omitted, defaults to "ca-bundle.crt". | ca-bundle.crt | MaxLength: 253 <br />MinLength: 1 <br />Pattern: `^[-._a-zA-Z0-9]+$` <br /> |
+
+
 #### ControllerConfig
 
 
@@ -204,6 +221,7 @@ _Appears in:_
 | `annotations` _object (keys:string, values:string)_ | annotations are for adding custom annotations to all the resources created for external-secrets deployment.<br />The annotations are merged with any default annotations set by the operator. User-specified annotations take precedence over defaults in case of conflicts.<br />Annotation keys containing domains `kubernetes.io/`, `openshift.io/`, `cert-manager.io/` or `k8s.io/` (including subdomains like `*.kubernetes.io/`) are not allowed. |  | MaxProperties: 20 <br />MinProperties: 0 <br /> |
 | `networkPolicies` _[NetworkPolicy](#networkpolicy) array_ | networkPolicies specifies the list of network policy configurations<br />to be applied to external-secrets pods.<br />Each entry allows specifying a name for the generated NetworkPolicy object,<br />along with its full Kubernetes NetworkPolicy definition.<br />The operator prepends "eso-user-" to the provided name when creating the Kubernetes object.<br />If this field is not provided, external-secrets components will be isolated<br />with deny-all network policies, which will prevent proper operation. |  | MaxItems: 50 <br />MinItems: 0 <br /> |
 | `componentConfigs` _[ComponentConfig](#componentconfig) array_ | componentConfigs allows specifying deployment-level configuration overrides for individual external-secrets components. This field enables fine-grained control over deployment settings for each component independently.<br />Each component can only have one configuration entry. |  | MaxItems: 4 <br />MinItems: 0 <br /> |
+| `trustedCABundle` _[ConfigMapKeyReference](#configmapkeyreference)_ | trustedCABundle references a ConfigMap containing PEM-encoded CA certificates for the external-secrets core controller to trust when making outbound TLS connections.<br />If specified, this bundle is used for all outbound TLS traffic, including connections to external secret management systems and configured proxies.<br />The ConfigMap must exist in the external-secrets operand namespace.<br />When omitted, external providers fall back to standard system certificates, while proxy connections use the OpenShift trusted CA bundle by default. |  |  |
 
 
 #### ControllerStatus
