@@ -548,11 +548,11 @@ func TestBuildNetworkPolicyFromConfig(t *testing.T) {
 	}
 }
 
-func TestExtractProxyPort(t *testing.T) {
+func TestExtractProxyPorts(t *testing.T) {
 	tests := []struct {
 		name        string
 		proxyConfig *operatorv1alpha1.ProxyConfig
-		wantPort    int
+		wantPorts   []int
 		wantErr     bool
 	}{
 		{
@@ -560,28 +560,28 @@ func TestExtractProxyPort(t *testing.T) {
 			proxyConfig: &operatorv1alpha1.ProxyConfig{
 				HTTPSProxy: "https://proxy.example.com:3129",
 			},
-			wantPort: 3129,
+			wantPorts: []int{3129},
 		},
 		{
 			name: "http proxy with explicit port",
 			proxyConfig: &operatorv1alpha1.ProxyConfig{
 				HTTPProxy: "http://proxy.example.com:3128",
 			},
-			wantPort: 3128,
+			wantPorts: []int{3128},
 		},
 		{
 			name: "https proxy without port defaults to 443",
 			proxyConfig: &operatorv1alpha1.ProxyConfig{
 				HTTPSProxy: "https://proxy.example.com",
 			},
-			wantPort: 443,
+			wantPorts: []int{443},
 		},
 		{
 			name: "http proxy without port defaults to 80",
 			proxyConfig: &operatorv1alpha1.ProxyConfig{
 				HTTPProxy: "http://proxy.example.com",
 			},
-			wantPort: 80,
+			wantPorts: []int{80},
 		},
 		{
 			name: "no proxy URLs returns error",
@@ -591,18 +591,34 @@ func TestExtractProxyPort(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "https proxy takes precedence over http proxy",
+			name: "both proxies with different ports returns both",
 			proxyConfig: &operatorv1alpha1.ProxyConfig{
 				HTTPSProxy: "https://proxy.example.com:8443",
 				HTTPProxy:  "http://proxy.example.com:8080",
 			},
-			wantPort: 8443,
+			wantPorts: []int{8443, 8080},
+		},
+		{
+			name: "both proxies with same port deduplicates",
+			proxyConfig: &operatorv1alpha1.ProxyConfig{
+				HTTPSProxy: "https://proxy.example.com:3128",
+				HTTPProxy:  "http://proxy.example.com:3128",
+			},
+			wantPorts: []int{3128},
+		},
+		{
+			name: "both proxies with scheme defaults different ports",
+			proxyConfig: &operatorv1alpha1.ProxyConfig{
+				HTTPSProxy: "https://proxy.example.com",
+				HTTPProxy:  "http://proxy.example.com",
+			},
+			wantPorts: []int{443, 80},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			port, err := extractProxyPort(tt.proxyConfig)
+			ports, err := extractProxyPorts(tt.proxyConfig)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("Expected error but got none")
@@ -613,8 +629,14 @@ func TestExtractProxyPort(t *testing.T) {
 				t.Errorf("Unexpected error: %v", err)
 				return
 			}
-			if port != tt.wantPort {
-				t.Errorf("Expected port %d, got %d", tt.wantPort, port)
+			if len(ports) != len(tt.wantPorts) {
+				t.Errorf("Expected %d ports, got %d: %v", len(tt.wantPorts), len(ports), ports)
+				return
+			}
+			for i, want := range tt.wantPorts {
+				if ports[i] != want {
+					t.Errorf("Port[%d]: expected %d, got %d", i, want, ports[i])
+				}
 			}
 		})
 	}
@@ -624,7 +646,7 @@ func TestBuildProxyEgressNetworkPolicy(t *testing.T) {
 	tests := []struct {
 		name        string
 		proxyConfig *operatorv1alpha1.ProxyConfig
-		wantPort    int32
+		wantPorts   []int32
 		wantErr     bool
 	}{
 		{
@@ -632,14 +654,22 @@ func TestBuildProxyEgressNetworkPolicy(t *testing.T) {
 			proxyConfig: &operatorv1alpha1.ProxyConfig{
 				HTTPProxy: "http://proxy.example.com:3128",
 			},
-			wantPort: 3128,
+			wantPorts: []int32{3128},
 		},
 		{
 			name: "builds policy with scheme-default port for https",
 			proxyConfig: &operatorv1alpha1.ProxyConfig{
 				HTTPSProxy: "https://proxy.example.com",
 			},
-			wantPort: 443,
+			wantPorts: []int32{443},
+		},
+		{
+			name: "builds policy with both proxy ports when different",
+			proxyConfig: &operatorv1alpha1.ProxyConfig{
+				HTTPSProxy: "https://proxy.example.com:8443",
+				HTTPProxy:  "http://proxy.example.com:3128",
+			},
+			wantPorts: []int32{8443, 3128},
 		},
 		{
 			name: "returns error for invalid proxy URL",
@@ -678,16 +708,18 @@ func TestBuildProxyEgressNetworkPolicy(t *testing.T) {
 			if len(np.Spec.Egress) != 1 {
 				t.Fatalf("Expected 1 egress rule, got %d", len(np.Spec.Egress))
 			}
-			if len(np.Spec.Egress[0].Ports) != 1 {
-				t.Fatalf("Expected 1 port in egress rule, got %d", len(np.Spec.Egress[0].Ports))
+			if len(np.Spec.Egress[0].Ports) != len(tt.wantPorts) {
+				t.Fatalf("Expected %d ports in egress rule, got %d", len(tt.wantPorts), len(np.Spec.Egress[0].Ports))
 			}
-			port := np.Spec.Egress[0].Ports[0]
-			if *port.Protocol != corev1.ProtocolTCP {
-				t.Errorf("Expected TCP protocol, got %v", *port.Protocol)
-			}
-			expectedPort := intstr.FromInt32(tt.wantPort)
-			if *port.Port != expectedPort {
-				t.Errorf("Expected port %v, got %v", expectedPort, *port.Port)
+			for i, wantPort := range tt.wantPorts {
+				port := np.Spec.Egress[0].Ports[i]
+				if *port.Protocol != corev1.ProtocolTCP {
+					t.Errorf("Port[%d]: expected TCP protocol, got %v", i, *port.Protocol)
+				}
+				expectedPort := intstr.FromInt32(wantPort)
+				if *port.Port != expectedPort {
+					t.Errorf("Port[%d]: expected port %v, got %v", i, expectedPort, *port.Port)
+				}
 			}
 			if len(np.Spec.PodSelector.MatchExpressions) != 1 {
 				t.Fatalf("Expected 1 match expression in pod selector, got %d", len(np.Spec.PodSelector.MatchExpressions))
@@ -753,6 +785,45 @@ func TestReconcileProxyEgressPolicy(t *testing.T) {
 				})
 			},
 			wantCreated: false,
+		},
+		{
+			name: "proxy egress policy not created when only NO_PROXY is configured",
+			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient) {
+				m.ExistsCalls(func(ctx context.Context, ns types.NamespacedName, obj client.Object) (bool, error) {
+					return false, nil
+				})
+			},
+			updateExternalSecretsConfig: func(esc *operatorv1alpha1.ExternalSecretsConfig) {
+				esc.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
+					NoProxy:                  "localhost,127.0.0.1,.svc",
+					NetworkPolicyProvisioning: operatorv1alpha1.ManagementStateManaged,
+				}
+			},
+			wantCreated: false,
+		},
+		{
+			name: "proxy egress policy deleted when existing and only NO_PROXY is configured",
+			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient) {
+				m.ExistsCalls(func(ctx context.Context, ns types.NamespacedName, obj client.Object) (bool, error) {
+					if o, ok := obj.(*networkingv1.NetworkPolicy); ok {
+						existing := &networkingv1.NetworkPolicy{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      proxyEgressPolicyName,
+								Namespace: externalsecretsDefaultNamespace,
+							},
+						}
+						existing.DeepCopyInto(o)
+					}
+					return true, nil
+				})
+			},
+			updateExternalSecretsConfig: func(esc *operatorv1alpha1.ExternalSecretsConfig) {
+				esc.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
+					NoProxy:                  "localhost,127.0.0.1,.svc",
+					NetworkPolicyProvisioning: operatorv1alpha1.ManagementStateManaged,
+				}
+			},
+			wantDeleted: true,
 		},
 		{
 			name: "proxy egress policy deleted when switching to unmanaged",

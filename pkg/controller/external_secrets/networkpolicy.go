@@ -237,10 +237,14 @@ func (r *Reconciler) getPodSelectorForComponent(componentName operatorv1alpha1.C
 
 // reconcileProxyEgressPolicy creates, updates, or removes the automatic proxy egress
 // NetworkPolicy depending on whether a proxy is configured and the management state.
+// When only NO_PROXY is set (no HTTP/HTTPS proxy URLs), no egress policy is created
+// because there is no proxy endpoint to allow traffic to.
 func (r *Reconciler) reconcileProxyEgressPolicy(esc *operatorv1alpha1.ExternalSecretsConfig, resourceMetadata common.ResourceMetadata, recon bool) error {
 	namespace := getNamespace(esc)
 	proxyConfig := r.getProxyConfiguration(esc)
-	shouldExist := proxyConfig != nil && getNetworkPolicyProvisioning(proxyConfig) == operatorv1alpha1.ManagementStateManaged
+	shouldExist := proxyConfig != nil &&
+		getNetworkPolicyProvisioning(proxyConfig) == operatorv1alpha1.ManagementStateManaged &&
+		(proxyConfig.HTTPSProxy != "" || proxyConfig.HTTPProxy != "")
 
 	existing := &networkingv1.NetworkPolicy{}
 	key := client.ObjectKey{Namespace: namespace, Name: proxyEgressPolicyName}
@@ -297,11 +301,20 @@ func getNetworkPolicyProvisioning(proxyConfig *operatorv1alpha1.ProxyConfig) ope
 }
 
 // buildProxyEgressNetworkPolicy constructs the eso-sys-allow-proxy-egress NetworkPolicy
-// that allows all ESO pods to reach the proxy server on its configured port.
+// that allows all ESO pods to reach the proxy server(s) on their configured port(s).
+// When HTTPSProxy and HTTPProxy use different ports, both are included as egress rules.
 func buildProxyEgressNetworkPolicy(proxyConfig *operatorv1alpha1.ProxyConfig, namespace string, resourceMetadata common.ResourceMetadata) (*networkingv1.NetworkPolicy, error) {
-	port, err := extractProxyPort(proxyConfig)
+	ports, err := extractProxyPorts(proxyConfig)
 	if err != nil {
 		return nil, err
+	}
+
+	egressPorts := make([]networkingv1.NetworkPolicyPort, 0, len(ports))
+	for _, port := range ports {
+		egressPorts = append(egressPorts, networkingv1.NetworkPolicyPort{
+			Protocol: ptr.To(corev1.ProtocolTCP),
+			Port:     ptr.To(intstr.FromInt32(int32(port))),
+		})
 	}
 
 	np := &networkingv1.NetworkPolicy{
@@ -322,12 +335,7 @@ func buildProxyEgressNetworkPolicy(proxyConfig *operatorv1alpha1.ProxyConfig, na
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
 			Egress: []networkingv1.NetworkPolicyEgressRule{
 				{
-					Ports: []networkingv1.NetworkPolicyPort{
-						{
-							Protocol: ptr.To(corev1.ProtocolTCP),
-							Port:     ptr.To(intstr.FromInt32(int32(port))),
-						},
-					},
+					Ports: egressPorts,
 				},
 			},
 		},
@@ -336,33 +344,49 @@ func buildProxyEgressNetworkPolicy(proxyConfig *operatorv1alpha1.ProxyConfig, na
 	return np, nil
 }
 
-// extractProxyPort returns the TCP port for the proxy egress NetworkPolicy, derived from
-// the first non-empty proxy URL in proxyConfig (HTTPSProxy, then HTTPProxy).
-// An explicit port in the URL is used directly; otherwise scheme defaults apply (443 for https, 80 for http).
-// Returns an error if no port can be determined from the configured proxy URLs.
-func extractProxyPort(proxyConfig *operatorv1alpha1.ProxyConfig) (int, error) {
+// extractProxyPorts returns the deduplicated set of TCP ports for the proxy egress
+// NetworkPolicy, derived from both HTTPSProxy and HTTPProxy URLs in proxyConfig.
+// An explicit port in a URL is used directly; otherwise scheme defaults apply
+// (443 for https, 80 for http). Returns an error if neither proxy URL yields a port
+// (e.g. only NO_PROXY is configured).
+func extractProxyPorts(proxyConfig *operatorv1alpha1.ProxyConfig) ([]int, error) {
+	seen := map[int]struct{}{}
+	var ports []int
+
 	for _, raw := range []string{proxyConfig.HTTPSProxy, proxyConfig.HTTPProxy} {
 		if raw == "" {
 			continue
 		}
 		u, err := url.Parse(raw)
 		if err != nil {
-			return 0, fmt.Errorf("failed to parse proxy URL %q: %w", raw, err)
+			return nil, fmt.Errorf("failed to parse proxy URL %q: %w", raw, err)
 		}
+		port := 0
 		if p := u.Port(); p != "" {
-			var port int
-			if _, err := fmt.Sscanf(p, "%d", &port); err == nil && port > 0 {
-				return port, nil
+			if _, err := fmt.Sscanf(p, "%d", &port); err != nil || port <= 0 {
+				port = 0
 			}
 		}
-		switch strings.ToLower(u.Scheme) {
-		case "https":
-			return 443, nil
-		case "http":
-			return 80, nil
+		if port == 0 {
+			switch strings.ToLower(u.Scheme) {
+			case "https":
+				port = 443
+			case "http":
+				port = 80
+			}
+		}
+		if port > 0 {
+			if _, exists := seen[port]; !exists {
+				seen[port] = struct{}{}
+				ports = append(ports, port)
+			}
 		}
 	}
-	return 0, fmt.Errorf("unable to determine proxy port: no valid proxy URL with a recognized scheme (http/https) found in proxyConfig")
+
+	if len(ports) == 0 {
+		return nil, fmt.Errorf("unable to determine proxy port: no valid proxy URL with a recognized scheme (http/https) found in proxyConfig")
+	}
+	return ports, nil
 }
 
 // desiredNetworkPolicyNames returns the set of Kubernetes NetworkPolicy object names that
@@ -389,7 +413,9 @@ func (r *Reconciler) desiredNetworkPolicyNames(esc *operatorv1alpha1.ExternalSec
 	}
 
 	proxyConfig := r.getProxyConfiguration(esc)
-	if proxyConfig != nil && getNetworkPolicyProvisioning(proxyConfig) == operatorv1alpha1.ManagementStateManaged {
+	if proxyConfig != nil &&
+		getNetworkPolicyProvisioning(proxyConfig) == operatorv1alpha1.ManagementStateManaged &&
+		(proxyConfig.HTTPSProxy != "" || proxyConfig.HTTPProxy != "") {
 		desired[proxyEgressPolicyName] = struct{}{}
 	}
 

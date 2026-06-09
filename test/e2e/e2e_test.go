@@ -24,6 +24,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"maps"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -894,6 +896,8 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 	// Tests labeled with "Proxy:HTTP" should only be run when a cluster-wide
 	// OpenShift egress proxy is already configured via proxy.config.openshift.io/cluster object
 	Context("Proxy Egress Network Policy", Label("Platform:Generic"), Label("Proxy:HTTP"), func() {
+		var clusterProxyPorts []int32
+
 		BeforeAll(func() {
 			By("Checking cluster-wide proxy configuration exists")
 			proxyGVR := schema.GroupVersionResource{
@@ -911,6 +915,8 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			Expect(proxyStatus).NotTo(BeNil(), "proxy CR status should exist")
 			Expect(httpProxy != "" || httpsProxy != "" || noProxy != "").To(BeTrue(),
 				"at least one proxy setting (httpProxy, httpsProxy, noProxy) should be configured in the cluster-wide Proxy CR")
+
+			clusterProxyPorts = expectedProxyPorts(httpsProxy, httpProxy)
 		})
 
 		AfterEach(func() {
@@ -941,12 +947,18 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			})
 			Expect(err).NotTo(HaveOccurred(), "should set proxy config with Managed provisioning")
 
-			By("Waiting for proxy egress network policy to be created")
+			By("Waiting for proxy egress network policy to be created with correct port(s)")
 			Eventually(func(g Gomega) {
 				np, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npProxyEgressPolicyName, metav1.GetOptions{})
 				g.Expect(err).NotTo(HaveOccurred(), "proxy egress policy %s should be created", npProxyEgressPolicyName)
 				g.Expect(np.Spec.PolicyTypes).To(ContainElement(networkingv1.PolicyTypeEgress))
 				g.Expect(np.Spec.Egress).NotTo(BeEmpty(), "egress rules should be configured")
+				g.Expect(np.Spec.Egress[0].Ports).To(HaveLen(len(clusterProxyPorts)),
+					"egress port count should match expected proxy ports")
+				for i, wantPort := range clusterProxyPorts {
+					g.Expect(np.Spec.Egress[0].Ports[i].Port.IntVal).To(Equal(wantPort),
+						"egress port[%d] should match the cluster proxy URL port", i)
+				}
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
@@ -1030,12 +1042,15 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			})
 			Expect(err).NotTo(HaveOccurred(), "should set proxy config with Managed provisioning")
 
-			By("Waiting for proxy egress network policy to be created")
+			By("Waiting for proxy egress network policy to be created with correct port")
 			Eventually(func(g Gomega) {
 				np, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npProxyEgressPolicyName, metav1.GetOptions{})
 				g.Expect(err).NotTo(HaveOccurred(), "proxy egress policy %s should be created", npProxyEgressPolicyName)
 				g.Expect(np.Spec.PolicyTypes).To(ContainElement(networkingv1.PolicyTypeEgress))
 				g.Expect(np.Spec.Egress).NotTo(BeEmpty(), "egress rules should be configured")
+				g.Expect(np.Spec.Egress[0].Ports).To(HaveLen(1), "single HTTP proxy should produce one egress port")
+				g.Expect(np.Spec.Egress[0].Ports[0].Port.IntVal).To(Equal(int32(3128)),
+					"egress port should match the explicit proxy URL port (3128)")
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
@@ -1050,3 +1065,42 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			NotTo(HaveOccurred(), "failed to delete test namespace")
 	})
 })
+
+// expectedProxyPorts derives the deduplicated TCP ports the operator should use for the
+// proxy egress NetworkPolicy, mirroring the logic in extractProxyPorts. It collects ports
+// from both httpsProxy and httpProxy URLs. An explicit port in the URL wins; otherwise
+// scheme defaults apply (443 for https, 80 for http).
+func expectedProxyPorts(httpsProxy, httpProxy string) []int32 {
+	seen := map[int32]struct{}{}
+	var ports []int32
+	for _, raw := range []string{httpsProxy, httpProxy} {
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		var port int32
+		if p := u.Port(); p != "" {
+			if v, err := strconv.Atoi(p); err == nil && v > 0 {
+				port = int32(v)
+			}
+		}
+		if port == 0 {
+			switch strings.ToLower(u.Scheme) {
+			case "https":
+				port = 443
+			case "http":
+				port = 80
+			}
+		}
+		if port > 0 {
+			if _, exists := seen[port]; !exists {
+				seen[port] = struct{}{}
+				ports = append(ports, port)
+			}
+		}
+	}
+	return ports
+}
