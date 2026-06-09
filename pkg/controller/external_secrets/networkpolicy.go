@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
@@ -35,7 +36,7 @@ func (r *Reconciler) createOrApplyNetworkPolicies(esc *operatorv1alpha1.External
 		return err
 	}
 
-	// TODO(siddhibhor-56,ESO-v1.4.0): Remove after 3 releases once the migration from
+	// TODO: Remove after 3 releases(in v1.5.0) once the migration from
 	// unprefixed to eso-sys-/eso-user- network policy names is no longer needed.
 	if err := r.cleanupMigratedNetworkPolicies(esc, resourceMetadata); err != nil {
 		return err
@@ -72,7 +73,7 @@ func (r *Reconciler) createOrApplyStaticNetworkPolicies(esc *operatorv1alpha1.Ex
 			condition: isBitwardenConfigEnabled(esc), // Only if bitwarden is enabled
 		},
 		{
-			assetName: allowDnsTrafficAssetName,
+			assetName: allowDNSTrafficAssetName,
 			condition: true,
 		},
 	}
@@ -254,7 +255,6 @@ func (r *Reconciler) reconcileProxyEgressPolicy(esc *operatorv1alpha1.ExternalSe
 			if err := r.Delete(r.ctx, existing); err != nil {
 				return common.FromClientError(err, "failed to delete proxy egress network policy %s", proxyEgressPolicyName)
 			}
-			r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "proxy egress NetworkPolicy %s removed", proxyEgressPolicyName)
 		}
 		return nil
 	}
@@ -296,16 +296,13 @@ func getNetworkPolicyProvisioning(proxyConfig *operatorv1alpha1.ProxyConfig) ope
 	return proxyConfig.NetworkPolicyProvisioning
 }
 
-// buildProxyEgressNetworkPolicy constructs the eso-sys-proxy-egress-core NetworkPolicy
+// buildProxyEgressNetworkPolicy constructs the eso-sys-allow-proxy-egress NetworkPolicy
 // that allows all ESO pods to reach the proxy server on its configured port.
 func buildProxyEgressNetworkPolicy(proxyConfig *operatorv1alpha1.ProxyConfig, namespace string, resourceMetadata common.ResourceMetadata) (*networkingv1.NetworkPolicy, error) {
 	port, err := extractProxyPort(proxyConfig)
 	if err != nil {
 		return nil, err
 	}
-
-	tcp := corev1.ProtocolTCP
-	portVal := intstr.FromInt32(int32(port))
 
 	np := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -326,7 +323,10 @@ func buildProxyEgressNetworkPolicy(proxyConfig *operatorv1alpha1.ProxyConfig, na
 			Egress: []networkingv1.NetworkPolicyEgressRule{
 				{
 					Ports: []networkingv1.NetworkPolicyPort{
-						{Protocol: &tcp, Port: &portVal},
+						{
+							Protocol: ptr.To(corev1.ProtocolTCP),
+							Port:     ptr.To(intstr.FromInt32(int32(port))),
+						},
 					},
 				},
 			},
@@ -336,7 +336,10 @@ func buildProxyEgressNetworkPolicy(proxyConfig *operatorv1alpha1.ProxyConfig, na
 	return np, nil
 }
 
-// extractProxyPort returns the port from the first non-empty proxy URL in the config.
+// extractProxyPort returns the TCP port for the proxy egress NetworkPolicy, derived from
+// the first non-empty proxy URL in proxyConfig (HTTPSProxy, then HTTPProxy).
+// An explicit port in the URL is used directly; otherwise scheme defaults apply (443 for https, 80 for http).
+// Returns an error if no port can be determined from the configured proxy URLs.
 func extractProxyPort(proxyConfig *operatorv1alpha1.ProxyConfig) (int, error) {
 	for _, raw := range []string{proxyConfig.HTTPSProxy, proxyConfig.HTTPProxy} {
 		if raw == "" {
@@ -352,7 +355,6 @@ func extractProxyPort(proxyConfig *operatorv1alpha1.ProxyConfig) (int, error) {
 				return port, nil
 			}
 		}
-		// Fall back to scheme-based default ports.
 		switch strings.ToLower(u.Scheme) {
 		case "https":
 			return 443, nil
@@ -360,12 +362,9 @@ func extractProxyPort(proxyConfig *operatorv1alpha1.ProxyConfig) (int, error) {
 			return 80, nil
 		}
 	}
-	return 3128, nil
+	return 0, fmt.Errorf("unable to determine proxy port: no valid proxy URL with a recognized scheme (http/https) found in proxyConfig")
 }
 
-// TODO(siddhibhor-56,ESO-v1.4.0): Remove after 3 releases once the migration from
-// unprefixed to eso-sys-/eso-user- network policy names is no longer needed.
-//
 // desiredNetworkPolicyNames returns the set of Kubernetes NetworkPolicy object names that
 // should exist for the current configuration. Used by cleanupMigratedNetworkPolicies to
 // identify stale objects.
@@ -380,7 +379,7 @@ func (r *Reconciler) desiredNetworkPolicyNames(esc *operatorv1alpha1.ExternalSec
 		{allowWebhookTrafficAssetName, true},
 		{allowCertControllerTrafficAssetName, !isCertManagerConfigEnabled(esc)},
 		{allowBitwardenServerTrafficAssetName, isBitwardenConfigEnabled(esc)},
-		{allowDnsTrafficAssetName, true},
+		{allowDNSTrafficAssetName, true},
 	}
 	for _, s := range staticAssets {
 		if s.condition {
@@ -400,9 +399,6 @@ func (r *Reconciler) desiredNetworkPolicyNames(esc *operatorv1alpha1.ExternalSec
 	return desired
 }
 
-// TODO(siddhibhor-56,ESO-v1.4.0): Remove after 3 releases once the migration from
-// unprefixed to eso-sys-/eso-user- network policy names is no longer needed.
-//
 // cleanupMigratedNetworkPolicies removes NetworkPolicy objects that are owned by the operator
 // (identified by the managed-by label) but are not in the current desired set. This handles
 // the migration from unprefixed names (pre-1.2.0) to the eso-sys-/eso-user- naming scheme
@@ -445,9 +441,6 @@ func (r *Reconciler) cleanupMigratedNetworkPolicies(esc *operatorv1alpha1.Extern
 	return r.markCleanupDone(esc)
 }
 
-// TODO(siddhibhor-56,ESO-v1.4.0): Remove after 3 releases once the migration from
-// unprefixed to eso-sys-/eso-user- network policy names is no longer needed.
-//
 // markCleanupDone patches the skipNPCleanupAnnotation onto the CR so the cleanup loop
 // is skipped on future reconciles.
 func (r *Reconciler) markCleanupDone(esc *operatorv1alpha1.ExternalSecretsConfig) error {

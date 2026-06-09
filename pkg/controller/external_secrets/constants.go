@@ -88,7 +88,7 @@ const (
 	// userNetworkPolicyPrefix is prepended to user-defined network policy names from the CR spec.
 	userNetworkPolicyPrefix = "eso-user-"
 
-	// TODO(siddhibhor-56,ESO-v1.4.0): Remove after 3 releases once the migration from
+	// TODO Remove after 3 releases(in v1.5.0) once the migration from
 	// unprefixed to eso-sys-/eso-user- network policy names is no longer needed.
 	//
 	// skipNPCleanupAnnotation marks that the one-time migration cleanup of unprefixed
@@ -96,7 +96,7 @@ const (
 	skipNPCleanupAnnotation = "externalsecretsconfig.operator.openshift.io/skip-np-cleanup-check"
 
 	// proxyEgressPolicyName is the Kubernetes object name for the automatic proxy egress policy.
-	proxyEgressPolicyName = systemNetworkPolicyPrefix + "proxy-egress-core"
+	proxyEgressPolicyName = systemNetworkPolicyPrefix + "allow-proxy-egress"
 )
 
 var (
@@ -150,7 +150,7 @@ const (
 	allowWebhookTrafficAssetName                  = "external-secrets/networkpolicy_allow-api-server-and-webhook-traffic.yaml"
 	allowCertControllerTrafficAssetName           = "external-secrets/networkpolicy_allow-api-server-egress-for-cert-controller-traffic.yaml"
 	allowBitwardenServerTrafficAssetName          = "external-secrets/networkpolicy_allow-api-server-egress-for-bitwarden-sever.yaml"
-	allowDnsTrafficAssetName                      = "external-secrets/networkpolicy_allow-dns.yaml"
+	allowDNSTrafficAssetName                      = "external-secrets/networkpolicy_allow-dns.yaml"
 )
 
 var (

@@ -26,7 +26,7 @@ func staticNetworkPolicies() map[string]string {
 		"eso-sys-allow-api-server-egress-for-webhook":          allowWebhookTrafficAssetName,
 		"eso-sys-allow-api-server-egress-for-cert-controller":  allowCertControllerTrafficAssetName,
 		"eso-sys-allow-api-server-egress-for-bitwarden-server": allowBitwardenServerTrafficAssetName,
-		"eso-sys-allow-to-dns":                                 allowDnsTrafficAssetName,
+		"eso-sys-allow-to-dns":                                 allowDNSTrafficAssetName,
 	}
 }
 
@@ -584,11 +584,11 @@ func TestExtractProxyPort(t *testing.T) {
 			wantPort: 80,
 		},
 		{
-			name: "no proxy URLs defaults to 3128",
+			name: "no proxy URLs returns error",
 			proxyConfig: &operatorv1alpha1.ProxyConfig{
 				NoProxy: "localhost",
 			},
-			wantPort: 3128,
+			wantErr: true,
 		},
 		{
 			name: "https proxy takes precedence over http proxy",
@@ -615,6 +615,92 @@ func TestExtractProxyPort(t *testing.T) {
 			}
 			if port != tt.wantPort {
 				t.Errorf("Expected port %d, got %d", tt.wantPort, port)
+			}
+		})
+	}
+}
+
+func TestBuildProxyEgressNetworkPolicy(t *testing.T) {
+	tests := []struct {
+		name        string
+		proxyConfig *operatorv1alpha1.ProxyConfig
+		wantPort    int32
+		wantErr     bool
+	}{
+		{
+			name: "builds policy with explicit port from http proxy",
+			proxyConfig: &operatorv1alpha1.ProxyConfig{
+				HTTPProxy: "http://proxy.example.com:3128",
+			},
+			wantPort: 3128,
+		},
+		{
+			name: "builds policy with scheme-default port for https",
+			proxyConfig: &operatorv1alpha1.ProxyConfig{
+				HTTPSProxy: "https://proxy.example.com",
+			},
+			wantPort: 443,
+		},
+		{
+			name: "returns error for invalid proxy URL",
+			proxyConfig: &operatorv1alpha1.ProxyConfig{
+				HTTPSProxy: "://invalid",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			esc := commontest.TestExternalSecretsConfig()
+			metadata := testResourceMetadata(esc)
+
+			np, err := buildProxyEgressNetworkPolicy(tt.proxyConfig, "test-namespace", metadata)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("Expected error but got none")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+
+			if np.Name != proxyEgressPolicyName {
+				t.Errorf("Expected name %s, got %s", proxyEgressPolicyName, np.Name)
+			}
+			if np.Namespace != "test-namespace" {
+				t.Errorf("Expected namespace test-namespace, got %s", np.Namespace)
+			}
+			if len(np.Spec.PolicyTypes) != 1 || np.Spec.PolicyTypes[0] != networkingv1.PolicyTypeEgress {
+				t.Error("Expected single Egress policy type")
+			}
+			if len(np.Spec.Egress) != 1 {
+				t.Fatalf("Expected 1 egress rule, got %d", len(np.Spec.Egress))
+			}
+			if len(np.Spec.Egress[0].Ports) != 1 {
+				t.Fatalf("Expected 1 port in egress rule, got %d", len(np.Spec.Egress[0].Ports))
+			}
+			port := np.Spec.Egress[0].Ports[0]
+			if *port.Protocol != corev1.ProtocolTCP {
+				t.Errorf("Expected TCP protocol, got %v", *port.Protocol)
+			}
+			expectedPort := intstr.FromInt32(tt.wantPort)
+			if *port.Port != expectedPort {
+				t.Errorf("Expected port %v, got %v", expectedPort, *port.Port)
+			}
+			if len(np.Spec.PodSelector.MatchExpressions) != 1 {
+				t.Fatalf("Expected 1 match expression in pod selector, got %d", len(np.Spec.PodSelector.MatchExpressions))
+			}
+			expr := np.Spec.PodSelector.MatchExpressions[0]
+			if expr.Key != "app.kubernetes.io/name" {
+				t.Errorf("Expected label key app.kubernetes.io/name, got %s", expr.Key)
+			}
+			if expr.Operator != metav1.LabelSelectorOpIn {
+				t.Errorf("Expected operator In, got %v", expr.Operator)
+			}
+			if len(expr.Values) != 4 {
+				t.Errorf("Expected 4 pod selector values, got %d", len(expr.Values))
 			}
 		})
 	}
@@ -705,7 +791,7 @@ func TestReconcileProxyEgressPolicy(t *testing.T) {
 					NetworkPolicyProvisioning: operatorv1alpha1.ManagementStateManaged,
 				}
 			},
-			wantErr: "failed to check existence of proxy egress network policy eso-sys-proxy-egress-core: test client error",
+			wantErr: "failed to check existence of proxy egress network policy eso-sys-allow-proxy-egress: test client error",
 		},
 	}
 
@@ -743,6 +829,9 @@ func TestReconcileProxyEgressPolicy(t *testing.T) {
 			}
 			if tt.wantDeleted && mock.DeleteCallCount() == 0 {
 				t.Error("Expected Delete to be called but it was not")
+			}
+			if !tt.wantDeleted && mock.DeleteCallCount() > 0 {
+				t.Errorf("Expected no Delete call but got %d", mock.DeleteCallCount())
 			}
 		})
 	}

@@ -80,9 +80,10 @@ const (
 
 const (
 	userNPPrefix            = "eso-user-"
-	npProxyEgressPolicyName = "eso-sys-proxy-egress-core"
-	managedByLabel          = "app.kubernetes.io/managed-by"
-	managedByValue          = "external-secrets-operator"
+	npProxyEgressPolicyName = "eso-sys-allow-proxy-egress"
+	managedByLabel = "app.kubernetes.io/managed-by"
+	partOfLabel    = "app.kubernetes.io/part-of"
+	managedByValue = "external-secrets-operator"
 )
 
 var expectedStaticNPNames = []string{
@@ -733,7 +734,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 	Context("Static Network Policy Naming", func() {
 		listManagedNetworkPolicies := func(ctx context.Context, namespace string) ([]networkingv1.NetworkPolicy, error) {
 			npList, err := clientset.NetworkingV1().NetworkPolicies(namespace).List(ctx, metav1.ListOptions{
-				LabelSelector: fmt.Sprintf("%s=%s", managedByLabel, managedByValue),
+				LabelSelector: fmt.Sprintf("%s=%s,%s=%s", managedByLabel, managedByValue, partOfLabel, managedByValue),
 			})
 			if err != nil {
 				return nil, err
@@ -785,7 +786,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
-		// TODO(siddhibhor-56,ESO-v1.4.0): Remove this test case after 3 releases once the migration from
+		// TODO: Remove this test case after 3 releases(in v1.5.0) once the migration from
 		// unprefixed to eso-sys-/eso-user- network policy names is no longer needed.
 		It("should set the skip-np-cleanup-check annotation on ExternalSecretsConfig after migration",
 			Label("Migration", "PostUpgradeCheck"), func() {
@@ -826,7 +827,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			By("Checking that custom policies exist with eso-user- prefix")
 			Eventually(func(g Gomega) {
 				nps, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).List(ctx, metav1.ListOptions{
-					LabelSelector: fmt.Sprintf("%s=%s", managedByLabel, managedByValue),
+					LabelSelector: fmt.Sprintf("%s=%s,%s=%s", managedByLabel, managedByValue, partOfLabel, managedByValue),
 				})
 				g.Expect(err).NotTo(HaveOccurred())
 

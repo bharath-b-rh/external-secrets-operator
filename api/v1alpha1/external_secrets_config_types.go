@@ -309,10 +309,11 @@ const (
 // It includes a name for identification and the network policy rules to be enforced.
 type NetworkPolicy struct {
 	// Name is the logical identifier for this network policy entry.
-	// The operator prepends "eso-user-" to this value when creating the Kubernetes
+	// The operator prepends "eso-user-" (10 characters) to this value when creating the Kubernetes
 	// NetworkPolicy object (e.g. "allow-egress" becomes "eso-user-allow-egress").
+	// Maximum length is 243 to accommodate the prefix within the 253-character Kubernetes name limit.
 	// +kubebuilder:validation:MinLength:=1
-	// +kubebuilder:validation:MaxLength:=253
+	// +kubebuilder:validation:MaxLength:=243
 	// +required
 	//nolint:kubeapilinter // Name is a listMapKey and must not have omitempty for proper patch identification
 	Name string `json:"name"`
