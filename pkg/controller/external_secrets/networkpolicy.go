@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -308,6 +309,9 @@ func buildProxyEgressNetworkPolicy(proxyConfig *operatorv1alpha1.ProxyConfig, na
 	if err != nil {
 		return nil, err
 	}
+	if len(ports) == 0 {
+		return nil, nil
+	}
 
 	egressPorts := make([]networkingv1.NetworkPolicyPort, 0, len(ports))
 	for _, port := range ports {
@@ -344,11 +348,11 @@ func buildProxyEgressNetworkPolicy(proxyConfig *operatorv1alpha1.ProxyConfig, na
 	return np, nil
 }
 
-// extractProxyPorts returns the deduplicated set of TCP ports for the proxy egress
+// extractProxyPorts returns the set of TCP ports for the proxy egress
 // NetworkPolicy, derived from both HTTPSProxy and HTTPProxy URLs in proxyConfig.
 // An explicit port in a URL is used directly; otherwise scheme defaults apply
-// (443 for https, 80 for http). Returns an error if neither proxy URL yields a port
-// (e.g. only NO_PROXY is configured).
+// (443 for https, 80 for http). Returns an empty slice when neither
+// proxy URL yields a port(e.g. only NO_PROXY is configured)
 func extractProxyPorts(proxyConfig *operatorv1alpha1.ProxyConfig) ([]int, error) {
 	seen := map[int]struct{}{}
 	var ports []int
@@ -363,8 +367,12 @@ func extractProxyPorts(proxyConfig *operatorv1alpha1.ProxyConfig) ([]int, error)
 		}
 		port := 0
 		if p := u.Port(); p != "" {
-			if _, err := fmt.Sscanf(p, "%d", &port); err != nil || port <= 0 {
-				port = 0
+			port, err = strconv.Atoi(p)
+			if err != nil {
+				return nil, fmt.Errorf("invalid port %q in proxy URL %q: %w", p, raw, err)
+			}
+			if port < 1 || port > 65535 {
+				return nil, fmt.Errorf("port %d out of range in proxy URL %q", port, raw)
 			}
 		}
 		if port == 0 {
@@ -383,9 +391,6 @@ func extractProxyPorts(proxyConfig *operatorv1alpha1.ProxyConfig) ([]int, error)
 		}
 	}
 
-	if len(ports) == 0 {
-		return nil, fmt.Errorf("unable to determine proxy port: no valid proxy URL with a recognized scheme (http/https) found in proxyConfig")
-	}
 	return ports, nil
 }
 

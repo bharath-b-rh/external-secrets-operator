@@ -584,11 +584,11 @@ func TestExtractProxyPorts(t *testing.T) {
 			wantPorts: []int{80},
 		},
 		{
-			name: "no proxy URLs returns error",
+			name: "no proxy URLs returns empty slice",
 			proxyConfig: &operatorv1alpha1.ProxyConfig{
 				NoProxy: "localhost",
 			},
-			wantErr: true,
+			wantPorts: nil,
 		},
 		{
 			name: "both proxies with different ports returns both",
@@ -795,7 +795,7 @@ func TestReconcileProxyEgressPolicy(t *testing.T) {
 			},
 			updateExternalSecretsConfig: func(esc *operatorv1alpha1.ExternalSecretsConfig) {
 				esc.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
-					NoProxy:                  "localhost,127.0.0.1,.svc",
+					NoProxy:                   "localhost,127.0.0.1,.svc",
 					NetworkPolicyProvisioning: operatorv1alpha1.ManagementStateManaged,
 				}
 			},
@@ -819,7 +819,7 @@ func TestReconcileProxyEgressPolicy(t *testing.T) {
 			},
 			updateExternalSecretsConfig: func(esc *operatorv1alpha1.ExternalSecretsConfig) {
 				esc.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
-					NoProxy:                  "localhost,127.0.0.1,.svc",
+					NoProxy:                   "localhost,127.0.0.1,.svc",
 					NetworkPolicyProvisioning: operatorv1alpha1.ManagementStateManaged,
 				}
 			},

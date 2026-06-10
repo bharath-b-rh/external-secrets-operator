@@ -3,6 +3,7 @@ package external_secrets
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
@@ -126,7 +127,7 @@ func (r *Reconciler) IsCertManagerInstalled() bool {
 
 // getProxyConfiguration returns the proxy configuration based on precedence.
 // The precedence order is: ExternalSecretsConfig > ExternalSecretsManager > OLM environment variables.
-func (r *Reconciler) getProxyConfiguration(esc *operatorv1alpha1.ExternalSecretsConfig) *operatorv1alpha1.ProxyConfig {
+func (r *Reconciler) getProxyConfiguration(esc *operatorv1alpha1.ExternalSecretsConfig) (*operatorv1alpha1.ProxyConfig, error) {
 	var proxyConfig *operatorv1alpha1.ProxyConfig
 
 	// Check ExternalSecretsConfig first
@@ -152,5 +153,32 @@ func (r *Reconciler) getProxyConfiguration(esc *operatorv1alpha1.ExternalSecrets
 		}
 	}
 
-	return proxyConfig
+	if proxyConfig != nil {
+		if err := validateProxy(proxyConfig.HTTPProxy); err != nil {
+			return nil, fmt.Errorf("failed to validate HTTP proxy: %w", err)
+		}
+		if err := validateProxy(proxyConfig.HTTPSProxy); err != nil {
+			return nil, fmt.Errorf("failed to validate HTTPS proxy: %w", err)
+		}
+	}
+
+	return proxyConfig, nil
+}
+
+// validateProxy checks if the proxy address configured is a valid URL.
+func validateProxy(rawURL string) error {
+	if rawURL == "" {
+		return nil
+	}
+
+	parsedURL, err := url.ParseRequestURI(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid proxy URL configured: %w", err)
+	}
+
+	if parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return fmt.Errorf("proxy URL must include valid scheme and host")
+	}
+
+	return nil
 }
