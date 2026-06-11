@@ -7,6 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -862,7 +863,7 @@ func TestReconcileProxyEgressPolicy(t *testing.T) {
 					NetworkPolicyProvisioning: operatorv1alpha1.ManagementStateManaged,
 				}
 			},
-			wantErr: "failed to check existence of proxy egress network policy eso-sys-allow-proxy-egress: test client error",
+			wantErr: "failed to check existence of proxy egress network policy external-secrets/eso-sys-allow-proxy-egress: test client error",
 		},
 	}
 
@@ -908,6 +909,77 @@ func TestReconcileProxyEgressPolicy(t *testing.T) {
 	}
 }
 
+func TestLegacyOperatorNetworkPolicyNames(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		setupESC     func(*operatorv1alpha1.ExternalSecretsConfig)
+		wantIncluded []string
+		wantExcluded []string
+	}{
+		{
+			name: "default static legacy names and CR entry",
+			setupESC: func(esc *operatorv1alpha1.ExternalSecretsConfig) {
+				esc.Spec.ControllerConfig.NetworkPolicies = []operatorv1alpha1.NetworkPolicy{
+					{Name: "allow-custom-egress", ComponentName: operatorv1alpha1.CoreController},
+				}
+			},
+			wantIncluded: []string{
+				"deny-all-traffic",
+				"allow-api-server-egress-for-main-controller",
+				"allow-api-server-egress-for-webhook",
+				"allow-api-server-egress-for-cert-controller",
+				"allow-to-dns",
+				"allow-custom-egress",
+			},
+			wantExcluded: []string{
+				"eso-sys-deny-all-traffic",
+				"eso-user-allow-custom-egress",
+				"proxy-egress-core",
+				"user-proxy-egress",
+			},
+		},
+		{
+			name: "cert-controller legacy name omitted when cert-manager enabled",
+			setupESC: func(esc *operatorv1alpha1.ExternalSecretsConfig) {
+				esc.Spec.ControllerConfig.CertProvider = &operatorv1alpha1.CertProvidersConfig{
+					CertManager: &operatorv1alpha1.CertManagerConfig{Mode: operatorv1alpha1.Enabled},
+				}
+			},
+			wantIncluded: []string{
+				"deny-all-traffic",
+				"allow-to-dns",
+			},
+			wantExcluded: []string{
+				"allow-api-server-egress-for-cert-controller",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			esc := commontest.TestExternalSecretsConfig()
+			if tt.setupESC != nil {
+				tt.setupESC(esc)
+			}
+			legacy := legacyOperatorNetworkPolicyNames(esc)
+
+			for _, name := range tt.wantIncluded {
+				if _, ok := legacy[name]; !ok {
+					t.Fatalf("legacy allowlist missing %q", name)
+				}
+			}
+			for _, name := range tt.wantExcluded {
+				if _, ok := legacy[name]; ok {
+					t.Fatalf("legacy allowlist should not contain %q", name)
+				}
+			}
+		})
+	}
+}
+
 func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 	tests := []struct {
 		name                        string
@@ -928,7 +1000,7 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 			wantPatchCount:  0,
 		},
 		{
-			name: "delete stale unprefixed policies",
+			name: "delete legacy unprefixed policies only",
 			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
@@ -936,6 +1008,7 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
 							{ObjectMeta: metav1.ObjectMeta{Name: "deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
 							{ObjectMeta: metav1.ObjectMeta{Name: "allow-to-dns", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "user-proxy-egress", Namespace: externalsecretsDefaultNamespace}},
 						}
 					}
 					return nil
@@ -945,7 +1018,7 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 			wantPatchCount:  1,
 		},
 		{
-			name: "no stale policies to delete",
+			name: "no legacy policies to delete",
 			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
@@ -961,6 +1034,31 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 			wantPatchCount:  1,
 		},
 		{
+			name: "delete legacy CR network policy name from allowlist",
+			updateExternalSecretsConfig: func(esc *operatorv1alpha1.ExternalSecretsConfig) {
+				esc.Spec.ControllerConfig.NetworkPolicies = []operatorv1alpha1.NetworkPolicy{
+					{
+						Name:          "allow-custom-egress",
+						ComponentName: operatorv1alpha1.CoreController,
+						Egress:        []networkingv1.NetworkPolicyEgressRule{{}},
+					},
+				}
+			},
+			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient) {
+				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
+						npList.Items = []networkingv1.NetworkPolicy{
+							{ObjectMeta: metav1.ObjectMeta{Name: "allow-custom-egress", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "eso-user-allow-custom-egress", Namespace: externalsecretsDefaultNamespace}},
+						}
+					}
+					return nil
+				})
+			},
+			wantDeleteCount: 1,
+			wantPatchCount:  1,
+		},
+		{
 			name: "list fails",
 			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
@@ -970,12 +1068,30 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 			wantErr: "failed to list network policies in external-secrets for cleanup: test client error",
 		},
 		{
+			name: "delete NotFound treated as success",
+			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient) {
+				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
+						npList.Items = []networkingv1.NetworkPolicy{
+							{ObjectMeta: metav1.ObjectMeta{Name: "deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
+						}
+					}
+					return nil
+				})
+				m.DeleteCalls(func(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+					return apierrors.NewNotFound(networkingv1.Resource("networkpolicies"), obj.GetName())
+				})
+			},
+			wantDeleteCount: 1,
+			wantPatchCount:  1,
+		},
+		{
 			name: "delete fails",
 			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
 						npList.Items = []networkingv1.NetworkPolicy{
-							{ObjectMeta: metav1.ObjectMeta{Name: "stale-policy", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
 						}
 					}
 					return nil
@@ -984,7 +1100,23 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 					return commontest.ErrTestClient
 				})
 			},
-			wantErr: "failed to delete stale network policy external-secrets/stale-policy: test client error",
+			wantErr: "failed to delete legacy network policy external-secrets/deny-all-traffic: test client error",
+		},
+		{
+			name: "skip user-created NP with operator labels but non-operator name",
+			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient) {
+				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
+						npList.Items = []networkingv1.NetworkPolicy{
+							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "my-custom-policy", Namespace: externalsecretsDefaultNamespace}},
+						}
+					}
+					return nil
+				})
+			},
+			wantDeleteCount: 0,
+			wantPatchCount:  1,
 		},
 	}
 

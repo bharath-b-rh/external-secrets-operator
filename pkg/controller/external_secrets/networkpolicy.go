@@ -9,6 +9,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -46,10 +47,13 @@ func (r *Reconciler) createOrApplyNetworkPolicies(esc *operatorv1alpha1.External
 	return nil
 }
 
-// createOrApplyStaticNetworkPolicies applies the static network policy manifests from bindata.
-func (r *Reconciler) createOrApplyStaticNetworkPolicies(esc *operatorv1alpha1.ExternalSecretsConfig, resourceMetadata common.ResourceMetadata, externalSecretsConfigCreateRecon bool) error {
-	// Define static network policy assets to apply
-	staticNetworkPolicies := []struct {
+// staticNetworkPolicyAssetConfigs returns static network policy bindata assets and whether each
+// should be applied for the current ExternalSecretsConfig.
+func staticNetworkPolicyAssetConfigs(esc *operatorv1alpha1.ExternalSecretsConfig) []struct {
+	assetName string
+	condition bool
+} {
+	return []struct {
 		assetName string
 		condition bool
 	}{
@@ -78,9 +82,11 @@ func (r *Reconciler) createOrApplyStaticNetworkPolicies(esc *operatorv1alpha1.Ex
 			condition: true,
 		},
 	}
+}
 
-	// Apply static network policies based on conditions
-	for _, np := range staticNetworkPolicies {
+// createOrApplyStaticNetworkPolicies applies the static network policy manifests from bindata.
+func (r *Reconciler) createOrApplyStaticNetworkPolicies(esc *operatorv1alpha1.ExternalSecretsConfig, resourceMetadata common.ResourceMetadata, externalSecretsConfigCreateRecon bool) error {
+	for _, np := range staticNetworkPolicyAssetConfigs(esc) {
 		if !np.condition {
 			continue
 		}
@@ -242,24 +248,29 @@ func (r *Reconciler) getPodSelectorForComponent(componentName operatorv1alpha1.C
 // because there is no proxy endpoint to allow traffic to.
 func (r *Reconciler) reconcileProxyEgressPolicy(esc *operatorv1alpha1.ExternalSecretsConfig, resourceMetadata common.ResourceMetadata, recon bool) error {
 	namespace := getNamespace(esc)
-	proxyConfig := r.getProxyConfiguration(esc)
+	proxyConfig, err := r.getProxyConfiguration(esc)
+	if err != nil {
+		return fmt.Errorf("failed to get proxy configuration: %w", err)
+	}
 	shouldExist := proxyConfig != nil &&
 		getNetworkPolicyProvisioning(proxyConfig) == operatorv1alpha1.ManagementStateManaged &&
 		(proxyConfig.HTTPSProxy != "" || proxyConfig.HTTPProxy != "")
+	npName := fmt.Sprintf("%s/%s", namespace, proxyEgressPolicyName)
 
 	existing := &networkingv1.NetworkPolicy{}
 	key := client.ObjectKey{Namespace: namespace, Name: proxyEgressPolicyName}
 	exists, err := r.Exists(r.ctx, key, existing)
 	if err != nil {
-		return common.FromClientError(err, "failed to check existence of proxy egress network policy %s", proxyEgressPolicyName)
+		return common.FromClientError(err, "failed to check existence of proxy egress network policy %s", npName)
 	}
 
 	if !shouldExist {
 		if exists {
-			r.log.V(1).Info("removing proxy egress network policy", "name", proxyEgressPolicyName)
+			r.log.V(1).Info("removing proxy egress network policy", "name", npName)
 			if err := r.Delete(r.ctx, existing); err != nil {
-				return common.FromClientError(err, "failed to delete proxy egress network policy %s", proxyEgressPolicyName)
+				return common.FromClientError(err, "failed to delete proxy egress network policy %s", npName)
 			}
+			r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "proxy egress NetworkPolicy %s removed", npName)
 		}
 		return nil
 	}
@@ -268,8 +279,6 @@ func (r *Reconciler) reconcileProxyEgressPolicy(esc *operatorv1alpha1.ExternalSe
 	if err != nil {
 		return fmt.Errorf("failed to build proxy egress network policy: %w", err)
 	}
-
-	npName := fmt.Sprintf("%s/%s", namespace, proxyEgressPolicyName)
 	switch {
 	case exists && common.HasObjectChanged(np, existing, &resourceMetadata):
 		r.log.V(1).Info("proxy egress NetworkPolicy modified, updating", "name", npName)
@@ -394,46 +403,34 @@ func extractProxyPorts(proxyConfig *operatorv1alpha1.ProxyConfig) ([]int, error)
 	return ports, nil
 }
 
-// desiredNetworkPolicyNames returns the set of Kubernetes NetworkPolicy object names that
-// should exist for the current configuration. Used by cleanupMigratedNetworkPolicies to
-// identify stale objects.
-func (r *Reconciler) desiredNetworkPolicyNames(esc *operatorv1alpha1.ExternalSecretsConfig) map[string]struct{} {
-	desired := map[string]struct{}{}
-	staticAssets := []struct {
-		assetName string
-		condition bool
-	}{
-		{denyAllNetworkPolicyAssetName, true},
-		{allowMainControllerTrafficAssetName, true},
-		{allowWebhookTrafficAssetName, true},
-		{allowCertControllerTrafficAssetName, !isCertManagerConfigEnabled(esc)},
-		{allowBitwardenServerTrafficAssetName, isBitwardenConfigEnabled(esc)},
-		{allowDNSTrafficAssetName, true},
-	}
-	for _, s := range staticAssets {
-		if s.condition {
-			np := common.DecodeNetworkPolicyObjBytes(assets.MustAsset(s.assetName))
-			desired[np.GetName()] = struct{}{}
+// TODO: Remove after 3 releases(in v1.5.0) once the migration from
+// unprefixed to eso-sys-/eso-user- network policy names is no longer needed.
+//
+// legacyOperatorNetworkPolicyNames returns unprefixed NetworkPolicy object names that may
+// exist from operator versions prior to the eso-sys-/eso-user- naming scheme. Used as a
+// delete allowlist by cleanupMigratedNetworkPolicies.
+func legacyOperatorNetworkPolicyNames(esc *operatorv1alpha1.ExternalSecretsConfig) map[string]struct{} {
+	legacy := map[string]struct{}{}
+	for _, s := range staticNetworkPolicyAssetConfigs(esc) {
+		if !s.condition {
+			continue
 		}
+		np := common.DecodeNetworkPolicyObjBytes(assets.MustAsset(s.assetName))
+		legacy[strings.TrimPrefix(np.GetName(), systemNetworkPolicyPrefix)] = struct{}{}
 	}
-
-	proxyConfig := r.getProxyConfiguration(esc)
-	if proxyConfig != nil &&
-		getNetworkPolicyProvisioning(proxyConfig) == operatorv1alpha1.ManagementStateManaged &&
-		(proxyConfig.HTTPSProxy != "" || proxyConfig.HTTPProxy != "") {
-		desired[proxyEgressPolicyName] = struct{}{}
-	}
-
 	for _, npConfig := range esc.Spec.ControllerConfig.NetworkPolicies {
-		desired[userNetworkPolicyPrefix+npConfig.Name] = struct{}{}
+		legacy[npConfig.Name] = struct{}{}
 	}
-	return desired
+	return legacy
 }
 
-// cleanupMigratedNetworkPolicies removes NetworkPolicy objects that are owned by the operator
-// (identified by the managed-by label) but are not in the current desired set. This handles
-// the migration from unprefixed names (pre-1.2.0) to the eso-sys-/eso-user- naming scheme
-// and also prunes stale user NPs that have been removed from the CR spec.
+// TODO: Remove after 3 releases(in v1.5.0) once the migration from
+// unprefixed to eso-sys-/eso-user- network policy names is no longer needed.
+//
+// cleanupMigratedNetworkPolicies removes legacy unprefixed NetworkPolicy objects created by
+// prior operator versions. Deletion is limited to an explicit allowlist of legacy names
+// (static bindata names with eso-sys- stripped, and CR networkPolicies names as-is) and
+// operator ownership labels so user-managed policies are not affected.
 //
 // The cleanup runs only once per CR lifetime: after a successful pass the
 // skipNPCleanupAnnotation is written to the CR so subsequent reconciles skip the loop.
@@ -443,7 +440,7 @@ func (r *Reconciler) cleanupMigratedNetworkPolicies(esc *operatorv1alpha1.Extern
 	}
 
 	namespace := getNamespace(esc)
-	desired := r.desiredNetworkPolicyNames(esc)
+	legacy := legacyOperatorNetworkPolicyNames(esc)
 
 	var npList networkingv1.NetworkPolicyList
 	listOpts := []client.ListOption{
@@ -459,14 +456,18 @@ func (r *Reconciler) cleanupMigratedNetworkPolicies(esc *operatorv1alpha1.Extern
 
 	for i := range npList.Items {
 		np := &npList.Items[i]
-		if _, ok := desired[np.GetName()]; ok {
+		if _, ok := legacy[np.GetName()]; !ok {
 			continue
 		}
-		r.log.V(1).Info("deleting stale/unprefixed network policy", "name", np.GetName(), "namespace", namespace)
+		r.log.V(1).Info("deleting legacy unprefixed network policy", "name", np.GetName(), "namespace", namespace)
 		if err := r.Delete(r.ctx, np); err != nil {
-			return common.FromClientError(err, "failed to delete stale network policy %s/%s", namespace, np.GetName())
+			if apierrors.IsNotFound(err) {
+				r.log.V(4).Info("legacy network policy already deleted", "name", np.GetName(), "namespace", namespace)
+				continue
+			}
+			return common.FromClientError(err, "failed to delete legacy network policy %s/%s", namespace, np.GetName())
 		}
-		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "stale NetworkPolicy %s/%s removed", namespace, np.GetName())
+		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "legacy NetworkPolicy %s/%s removed", namespace, np.GetName())
 	}
 
 	return r.markCleanupDone(esc)
