@@ -511,13 +511,14 @@ func (r *Reconciler) setProxyEnvVars(container *corev1.Container, proxyConfig *o
 	if proxyConfig == nil {
 		return
 	}
-	if container.Env == nil {
-		container.Env = []corev1.EnvVar{}
-	}
 
 	setEnvVar := func(name, value string) {
 		if value == "" {
 			return
+		}
+
+		if container.Env == nil {
+			container.Env = []corev1.EnvVar{}
 		}
 
 		// Check if the environment variable already exists
