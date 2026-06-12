@@ -27,6 +27,9 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+
+	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
+	"github.com/openshift/external-secrets-operator/test/utils"
 )
 
 // resourceType defines a Kubernetes resource type to verify annotations on
@@ -215,4 +218,18 @@ func deploymentContainerHasArg(deployment *appsv1.Deployment, containerName, arg
 		return false, false
 	}
 	return slices.Contains(args, arg), true
+}
+
+// componentConfigsForESC returns component configs that apply to deployments present for the given ESC.
+func componentConfigsForESC(esc *operatorv1alpha1.ExternalSecretsConfig, configs []operatorv1alpha1.ComponentConfig) []operatorv1alpha1.ComponentConfig {
+	if utils.IsCertControllerExpected(esc) {
+		return configs
+	}
+	filtered := make([]operatorv1alpha1.ComponentConfig, 0, len(configs))
+	for _, cfg := range configs {
+		if cfg.ComponentName != operatorv1alpha1.CertController {
+			filtered = append(filtered, cfg)
+		}
+	}
+	return filtered
 }

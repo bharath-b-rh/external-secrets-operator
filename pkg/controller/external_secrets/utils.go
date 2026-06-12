@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"maps"
 	"os"
 
 	corev1 "k8s.io/api/core/v1"
@@ -22,7 +23,7 @@ import (
 )
 
 func getNamespace(_ *operatorv1alpha1.ExternalSecretsConfig) string {
-	return externalsecretsDefaultNamespace
+	return OperandDefaultNamespace
 }
 
 func updateNamespace(obj client.Object, esc *operatorv1alpha1.ExternalSecretsConfig) {
@@ -288,4 +289,63 @@ func (r *Reconciler) patchResourceMetadata(desired client.Object, resourceMetada
 		return fmt.Errorf("failed to marshal metadata patch: %w", err)
 	}
 	return r.CtrlClient.Patch(r.ctx, desired, client.RawPatch(types.JSONPatchType, patchBytes))
+}
+
+func (r *Reconciler) setProxyStatus(esc *operatorv1alpha1.ExternalSecretsConfig) {
+	r.proxyEnabled = esc.Spec.ApplicationConfig.Proxy != nil || (r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Proxy != nil) ||
+		(os.Getenv(httpProxyEnvVar) != "" || os.Getenv(httpsProxyEnvVar) != "" || os.Getenv(noProxyEnvVar) != "")
+}
+
+func (r *Reconciler) isProxyEnabled() bool {
+	return r.proxyEnabled
+}
+
+// hasManagedOrWatchLabel reports whether labels identify an operand resource created
+// by the operator or a user configured resource that the operator watches.
+func hasManagedOrWatchLabel(labels map[string]string) bool {
+	return labels[ManagedResourceLabelKey] == ManagedResourceLabelValue ||
+		labels[WatchedResourceLabelKey] == WatchedResourceLabelValue
+}
+
+// getWithCacheFallback reads a resource from the manager cache first. On IsNotFound it
+// falls back to UncachedClient for objects not yet synced into the cache.
+func (r *Reconciler) getWithCacheFallback(key types.NamespacedName, obj client.Object) error {
+	if err := r.Get(r.ctx, key, obj); err == nil {
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
+	return r.UncachedClient.Get(r.ctx, key, obj)
+}
+
+// updateWatchLabel ensures WatchedResourceLabelKey is set on a referenced resource at key
+// so subsequent changes enqueue ExternalSecretsConfig reconciliation. obj is an empty instance
+// of the resource type to patch. The object is loaded via getWithCacheFallback and the label is
+// applied with a merge patch to avoid overwriting unrelated fields and to reduce conflict with
+// concurrent writers.
+func (r *Reconciler) updateWatchLabel(key types.NamespacedName, obj client.Object) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := r.getWithCacheFallback(key, obj); err != nil {
+			return err
+		}
+		if labels := obj.GetLabels(); labels != nil && labels[WatchedResourceLabelKey] == WatchedResourceLabelValue {
+			return nil
+		}
+
+		base := obj.DeepCopyObject().(client.Object)
+		labels := obj.GetLabels()
+		if labels == nil {
+			labels = make(map[string]string)
+		} else {
+			labels = maps.Clone(labels)
+		}
+		labels[WatchedResourceLabelKey] = WatchedResourceLabelValue
+		obj.SetLabels(labels)
+
+		patch := client.MergeFrom(base)
+		if err := r.UncachedClient.Patch(r.ctx, obj, patch); err != nil {
+			return fmt.Errorf("failed to patch watch label on %q: %w", key, err)
+		}
+		return nil
+	})
 }

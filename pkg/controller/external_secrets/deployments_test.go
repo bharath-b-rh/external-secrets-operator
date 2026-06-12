@@ -9,14 +9,17 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/openshift/external-secrets-operator/api/v1alpha1"
 	"github.com/openshift/external-secrets-operator/pkg/controller/client/fakes"
+	"github.com/openshift/external-secrets-operator/pkg/controller/common"
 	"github.com/openshift/external-secrets-operator/pkg/controller/commontest"
 )
 
@@ -25,14 +28,14 @@ const (
 	bitwardenSDKServerContainerName = "bitwarden-sdk-server"
 )
 
-// Helper function to create an ExistsCalls mock that returns false
+// Helper function to create an ExistsCalls mock that returns false.
 func doesNotExist() func(context.Context, types.NamespacedName, client.Object) (bool, error) {
 	return func(ctx context.Context, ns types.NamespacedName, obj client.Object) (bool, error) {
 		return false, nil
 	}
 }
 
-// Helper function to set up mock for deployment creation
+// Helper function to set up mock for deployment creation.
 func setupDeploymentCreate(m *fakes.FakeCtrlClient, capturedDeployment **appsv1.Deployment, deploymentName string) {
 	m.ExistsCalls(doesNotExist())
 	m.CreateCalls(func(ctx context.Context, obj client.Object, _ ...client.CreateOption) error {
@@ -46,7 +49,7 @@ func setupDeploymentCreate(m *fakes.FakeCtrlClient, capturedDeployment **appsv1.
 	})
 }
 
-// Helper function to validate revision history limit
+// Helper function to validate revision history limit.
 func validateRevisionHistory(expectedLimit int32) func(*testing.T, *appsv1.Deployment) {
 	return func(t *testing.T, deployment *appsv1.Deployment) {
 		if deployment == nil {
@@ -63,7 +66,7 @@ func validateRevisionHistory(expectedLimit int32) func(*testing.T, *appsv1.Deplo
 	}
 }
 
-// Helper to create component config with revision history limit
+// Helper to create component config with revision history limit.
 func componentConfigWithRevisionLimit(name v1alpha1.ComponentName, limit *int32) v1alpha1.ComponentConfig {
 	return v1alpha1.ComponentConfig{
 		ComponentName:     name,
@@ -71,7 +74,7 @@ func componentConfigWithRevisionLimit(name v1alpha1.ComponentName, limit *int32)
 	}
 }
 
-// Helper to create ESC update function with component configs
+// Helper to create ESC update function with component configs.
 func escWithComponentConfigs(configs ...v1alpha1.ComponentConfig) func(*v1alpha1.ExternalSecretsConfig) {
 	return func(esc *v1alpha1.ExternalSecretsConfig) {
 		esc.Status.ExternalSecretsImage = commontest.TestExternalSecretsImageName
@@ -846,8 +849,9 @@ func TestUpdateProxyConfiguration(t *testing.T) {
 		VolumeSource: corev1.VolumeSource{
 			ConfigMap: &corev1.ConfigMapVolumeSource{
 				LocalObjectReference: corev1.LocalObjectReference{
-					Name: "external-secrets-trusted-ca-bundle",
+					Name: ProxyTrustedCABundleConfigMapName,
 				},
+				DefaultMode: ptr.To(int32(420)),
 			},
 		},
 	}
@@ -1283,7 +1287,7 @@ func TestUpdateProxyConfiguration(t *testing.T) {
 									VolumeSource: corev1.VolumeSource{
 										ConfigMap: &corev1.ConfigMapVolumeSource{
 											LocalObjectReference: corev1.LocalObjectReference{
-												Name: "external-secrets-trusted-ca-bundle",
+												Name: ProxyTrustedCABundleConfigMapName,
 											},
 										},
 									},
@@ -1331,7 +1335,12 @@ func TestUpdateProxyConfiguration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Set up environment variables
+			for _, key := range []string{
+				httpProxyEnvVar, httpsProxyEnvVar, noProxyEnvVar,
+				httpProxyEnvVarLowercase, httpsProxyEnvVarLowercase, noProxyEnvVarLowercase,
+			} {
+				t.Setenv(key, "")
+			}
 			for key, value := range tt.olmEnvVars {
 				t.Setenv(key, value)
 			}
@@ -1339,12 +1348,9 @@ func TestUpdateProxyConfiguration(t *testing.T) {
 			r := &Reconciler{
 				esm: tt.externalSecretsManager,
 			}
+			r.setProxyStatus(tt.externalSecretsConfig)
 
-			err := r.updateProxyConfiguration(tt.deployment, tt.externalSecretsConfig)
-			if err != nil {
-				t.Errorf("updateProxyConfiguration() error = %v", err)
-				return
-			}
+			r.updateProxyConfiguration(tt.deployment, tt.externalSecretsConfig)
 
 			validateEnvironmentVariables(t, tt.deployment, tt.expectedContainerEnvVars)
 			validateVolumes(t, tt.deployment, tt.expectedVolumes)
@@ -1361,9 +1367,13 @@ func validateEnvironmentVariables(t *testing.T, deployment *appsv1.Deployment, e
 			t.Errorf("Container %s not found in deployment", containerName)
 			return
 		}
-		if !reflect.DeepEqual(container.Env, expectedEnvVars) {
+		actualEnv := append([]corev1.EnvVar(nil), container.Env...)
+		expectedEnv := append([]corev1.EnvVar(nil), expectedEnvVars...)
+		slices.SortFunc(actualEnv, func(a, b corev1.EnvVar) int { return strings.Compare(a.Name, b.Name) })
+		slices.SortFunc(expectedEnv, func(a, b corev1.EnvVar) int { return strings.Compare(a.Name, b.Name) })
+		if !reflect.DeepEqual(actualEnv, expectedEnv) {
 			t.Errorf("Container %s environment variables mismatch.\nExpected: %+v\nActual: %+v",
-				containerName, expectedEnvVars, container.Env)
+				containerName, expectedEnv, actualEnv)
 		}
 	}
 }
@@ -1373,7 +1383,7 @@ func validateVolumes(t *testing.T, deployment *appsv1.Deployment, expectedVolume
 	if len(expectedVolumes) == 0 {
 		// Verify no trusted CA bundle volume was added
 		for _, volume := range deployment.Spec.Template.Spec.Volumes {
-			if volume.Name == trustedCABundleVolumeName {
+			if volume.Name == ProxyTrustedCABundleVolumeName {
 				t.Errorf("Expected no trusted CA bundle volume, but found one: %+v", volume)
 			}
 		}
@@ -1411,7 +1421,7 @@ func validateVolumeMounts(t *testing.T, deployment *appsv1.Deployment, expectedV
 
 		// Determine if we're testing for trusted CA mounts or non-trusted CA mounts
 		var actualMounts []corev1.VolumeMount
-		if len(expectedMounts) > 0 && expectedMounts[0].Name == trustedCABundleVolumeName {
+		if len(expectedMounts) > 0 && expectedMounts[0].Name == ProxyTrustedCABundleVolumeName {
 			// Testing for trusted CA mounts
 			actualMounts = filterTrustedCAMounts(container.VolumeMounts)
 		} else {
@@ -1447,7 +1457,7 @@ func findContainer(deployment *appsv1.Deployment, containerName string) *corev1.
 func filterTrustedCAMounts(volumeMounts []corev1.VolumeMount) []corev1.VolumeMount {
 	var trustedCAMounts []corev1.VolumeMount
 	for _, mount := range volumeMounts {
-		if mount.Name == trustedCABundleVolumeName {
+		if mount.Name == ProxyTrustedCABundleVolumeName {
 			trustedCAMounts = append(trustedCAMounts, mount)
 		}
 	}
@@ -1458,7 +1468,7 @@ func filterTrustedCAMounts(volumeMounts []corev1.VolumeMount) []corev1.VolumeMou
 func filterNonTrustedCAMounts(volumeMounts []corev1.VolumeMount) []corev1.VolumeMount {
 	var nonTrustedCAMounts []corev1.VolumeMount
 	for _, mount := range volumeMounts {
-		if mount.Name != trustedCABundleVolumeName {
+		if mount.Name != ProxyTrustedCABundleVolumeName {
 			nonTrustedCAMounts = append(nonTrustedCAMounts, mount)
 		}
 	}
@@ -1671,7 +1681,7 @@ func TestMergeEnvVars(t *testing.T) {
 				Env:  tt.existingEnv,
 			}
 
-			mergeEnvVars(container, tt.overrideEnv)
+			mergeUserEnvVars(container, tt.overrideEnv)
 
 			if len(container.Env) != len(tt.expectedEnv) {
 				t.Errorf("mergeEnvVars() got %d env vars, want %d", len(container.Env), len(tt.expectedEnv))
@@ -1917,6 +1927,306 @@ func TestNormalizeDurationArg(t *testing.T) {
 		t.Run(tt.in, func(t *testing.T) {
 			if got := normalizeDurationArg(tt.in); got != tt.want {
 				t.Errorf("normalizeDurationArg(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyUserCABundleConfig(t *testing.T) {
+	t.Parallel()
+
+	validPEM := mustPEMCert(t, true)
+	cmName := "user-ca-bundle"
+
+	baseESC := &v1alpha1.ExternalSecretsConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
+		Spec: v1alpha1.ExternalSecretsConfigSpec{
+			ControllerConfig: v1alpha1.ControllerConfig{
+				TrustedCABundle: &v1alpha1.ConfigMapKeyReference{
+					Name: cmName,
+					Key:  UserCABundleKeyPath,
+				},
+			},
+		},
+	}
+
+	baseDeployment := func() *appsv1.Deployment {
+		return &appsv1.Deployment{
+			Spec: appsv1.DeploymentSpec{
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: OperandCoreControllerContainer}},
+					},
+				},
+			},
+		}
+	}
+
+	multiContainerDeployment := func() *appsv1.Deployment {
+		return &appsv1.Deployment{
+			Spec: appsv1.DeploymentSpec{
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: OperandCoreControllerContainer},
+							{Name: "sidecar"},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name         string
+		esc          *v1alpha1.ExternalSecretsConfig
+		cm           *corev1.ConfigMap
+		deployment   *appsv1.Deployment
+		proxyEnabled bool
+		wantErr      bool
+		wantTrusted  bool
+		assertEvents func(t *testing.T, r *Reconciler)
+		assertDeploy func(t *testing.T, deployment *appsv1.Deployment)
+	}{
+		{
+			name:        "mounts volume and SSL_CERT_DIR when valid",
+			esc:         baseESC,
+			cm:          testUserCAConfigMap(cmName, validPEM, nil),
+			deployment:  baseDeployment(),
+			wantTrusted: true,
+			assertDeploy: func(t *testing.T, deployment *appsv1.Deployment) {
+				t.Helper()
+				foundVolume := false
+				for _, vol := range deployment.Spec.Template.Spec.Volumes {
+					if vol.Name == UserCABundleVolumeName && vol.ConfigMap != nil && vol.ConfigMap.Name == cmName {
+						foundVolume = true
+					}
+				}
+				if !foundVolume {
+					t.Fatal("expected user-ca-bundle volume")
+				}
+				container := findContainer(deployment, OperandCoreControllerContainer)
+				if container == nil {
+					t.Fatal("controller container not found")
+				}
+				hasUserCAMount := false
+				for _, mount := range container.VolumeMounts {
+					if mount.Name == UserCABundleVolumeName {
+						hasUserCAMount = true
+					}
+				}
+				if !hasUserCAMount {
+					t.Fatal("expected user-ca-bundle volume mount on controller container")
+				}
+				hasSSLCertDir := false
+				for _, env := range container.Env {
+					if env.Name == SSLCertDirEnvVar && env.Value == SSLCertDirValue {
+						hasSSLCertDir = true
+					}
+				}
+				if !hasSSLCertDir {
+					t.Fatal("expected SSL_CERT_DIR on controller container")
+				}
+			},
+		},
+		{
+			name:        "mounts only on controller container when multiple containers exist",
+			esc:         baseESC,
+			cm:          testUserCAConfigMap(cmName, validPEM, nil),
+			deployment:  multiContainerDeployment(),
+			wantTrusted: true,
+			assertDeploy: func(t *testing.T, deployment *appsv1.Deployment) {
+				t.Helper()
+				controller := findContainer(deployment, OperandCoreControllerContainer)
+				if controller == nil {
+					t.Fatal("controller container not found")
+				}
+				hasUserCAMount := false
+				for _, mount := range controller.VolumeMounts {
+					if mount.Name == UserCABundleVolumeName {
+						hasUserCAMount = true
+						break
+					}
+				}
+				if !hasUserCAMount {
+					t.Fatal("expected user-ca-bundle volume mount on controller container")
+				}
+				sidecar := findContainer(deployment, "sidecar")
+				if sidecar == nil {
+					t.Fatal("sidecar container not found")
+				}
+				for _, mount := range sidecar.VolumeMounts {
+					if mount.Name == UserCABundleVolumeName {
+						t.Fatal("user-ca-bundle volume mount must not be added to non-controller containers")
+					}
+				}
+			},
+		},
+		{
+			name:        "returns TrustedCABundleError for invalid PEM",
+			esc:         baseESC,
+			cm:          testUserCAConfigMap(cmName, "not pem", nil),
+			deployment:  baseDeployment(),
+			wantErr:     true,
+			wantTrusted: true,
+		},
+		{
+			name: "clears config when trustedCABundle is nil",
+			esc: func() *v1alpha1.ExternalSecretsConfig {
+				esc := baseESC.DeepCopy()
+				esc.Spec.ControllerConfig.TrustedCABundle = nil
+				return esc
+			}(),
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Volumes: []corev1.Volume{{Name: UserCABundleVolumeName}},
+							Containers: []corev1.Container{{
+								Name: OperandCoreControllerContainer,
+								Env:  []corev1.EnvVar{{Name: SSLCertDirEnvVar, Value: SSLCertDirValue}},
+								VolumeMounts: []corev1.VolumeMount{{
+									Name:      UserCABundleVolumeName,
+									MountPath: UserCABundleMountPath,
+									ReadOnly:  true,
+								}},
+							}},
+						},
+					},
+				},
+			},
+			assertDeploy: func(t *testing.T, deployment *appsv1.Deployment) {
+				t.Helper()
+				for _, vol := range deployment.Spec.Template.Spec.Volumes {
+					if vol.Name == UserCABundleVolumeName {
+						t.Fatal("user-ca-bundle volume should be removed")
+					}
+				}
+				controller := findContainer(deployment, OperandCoreControllerContainer)
+				if controller == nil {
+					t.Fatal("controller container not found")
+				}
+				for _, mount := range controller.VolumeMounts {
+					if mount.Name == UserCABundleVolumeName {
+						t.Fatal("user-ca-bundle volume mount should be removed from controller container")
+					}
+				}
+			},
+		},
+		{
+			name:         "skips mount when CNO label and proxy enabled",
+			esc:          baseESC,
+			cm:           testUserCAConfigMap(cmName, validPEM, map[string]string{TrustedCABundleInjectLabel: "true"}),
+			deployment:   baseDeployment(),
+			proxyEnabled: true,
+			assertDeploy: func(t *testing.T, deployment *appsv1.Deployment) {
+				t.Helper()
+				for _, vol := range deployment.Spec.Template.Spec.Volumes {
+					if vol.Name == UserCABundleVolumeName {
+						t.Fatal("user-ca-bundle volume should not be mounted when CNO inject label and proxy are set")
+					}
+				}
+			},
+			assertEvents: func(t *testing.T, r *Reconciler) {
+				t.Helper()
+				assertRecorderNormalEvent(t, r, trustedCABundleEventSkippedCNOProxy)
+			},
+		},
+		{
+			name: "removes user CA config when ConfigMap is missing",
+			esc:  baseESC,
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Volumes: []corev1.Volume{{Name: UserCABundleVolumeName}},
+							Containers: []corev1.Container{{
+								Name: OperandCoreControllerContainer,
+								Env:  []corev1.EnvVar{{Name: SSLCertDirEnvVar, Value: SSLCertDirValue}},
+								VolumeMounts: []corev1.VolumeMount{{
+									Name:      UserCABundleVolumeName,
+									MountPath: UserCABundleMountPath,
+									ReadOnly:  true,
+								}},
+							}},
+						},
+					},
+				},
+			},
+			wantErr:     true,
+			wantTrusted: true,
+			assertEvents: func(t *testing.T, r *Reconciler) {
+				t.Helper()
+				assertNoRecorderEvent(t, r)
+			},
+			assertDeploy: func(t *testing.T, deployment *appsv1.Deployment) {
+				t.Helper()
+				for _, vol := range deployment.Spec.Template.Spec.Volumes {
+					if vol.Name == UserCABundleVolumeName {
+						t.Fatal("user-ca-bundle volume should be removed when ConfigMap is missing")
+					}
+				}
+				controller := findContainer(deployment, OperandCoreControllerContainer)
+				if controller == nil {
+					t.Fatal("controller container not found")
+				}
+				for _, mount := range controller.VolumeMounts {
+					if mount.Name == UserCABundleVolumeName {
+						t.Fatal("user-ca-bundle volume mount should be removed when ConfigMap is missing")
+					}
+				}
+				for _, env := range controller.Env {
+					if env.Name == SSLCertDirEnvVar {
+						t.Fatal("SSL_CERT_DIR should be removed when ConfigMap is missing")
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var cached, uncached *fakes.FakeCtrlClient
+			switch {
+			case tt.cm != nil:
+				cached, uncached = setupConfigMapClients(t, tt.cm)
+			case tt.name == "removes user CA config when ConfigMap is missing":
+				cached = &fakes.FakeCtrlClient{}
+				uncached = &fakes.FakeCtrlClient{}
+				notFound := func(_ context.Context, ns types.NamespacedName, _ client.Object) error {
+					return apierrors.NewNotFound(corev1.Resource("configmaps"), ns.Name)
+				}
+				cached.GetCalls(notFound)
+				uncached.GetCalls(notFound)
+			}
+			r := &Reconciler{
+				ctx:            context.Background(),
+				CtrlClient:     cached,
+				UncachedClient: uncached,
+				eventRecorder:  record.NewFakeRecorder(10),
+				now:            &common.Now{},
+				proxyEnabled:   tt.proxyEnabled,
+			}
+
+			err := r.applyUserCABundleConfig(tt.deployment, tt.esc)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("applyUserCABundleConfig() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantTrusted && err != nil && !common.IsUserTrustedCABundleError(err) {
+				t.Fatalf("expected TrustedCABundleError, got %v", err)
+			}
+			if tt.assertDeploy != nil {
+				tt.assertDeploy(t, tt.deployment)
+			}
+			switch {
+			case tt.assertEvents != nil:
+				tt.assertEvents(t, r)
+			case tt.wantErr:
+				assertRecorderWarningEvent(t, r, trustedCABundleEventInvalidPEM)
+			default:
+				assertNoRecorderEvent(t, r)
 			}
 		})
 	}

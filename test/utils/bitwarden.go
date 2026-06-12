@@ -39,11 +39,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/openshift/external-secrets-operator/pkg/controller/common"
+	externalsecrets "github.com/openshift/external-secrets-operator/pkg/controller/external_secrets"
 )
 
 const (
 	// BitwardenOperandNamespace is the namespace where bitwarden-sdk-server is deployed by ESO.
-	BitwardenOperandNamespace = "external-secrets"
+	BitwardenOperandNamespace = externalsecrets.OperandDefaultNamespace
 	// BitwardenSDKServerServiceName is the Kubernetes service name for bitwarden-sdk-server.
 	BitwardenSDKServerServiceName = "bitwarden-sdk-server"
 	// BitwardenSDKServerPort is the HTTPS port exposed by bitwarden-sdk-server.
@@ -71,7 +74,7 @@ const TokenSecretKey = "token"
 // Document in docs/e2e/README.md. Keys: token, organization_id, project_id.
 const (
 	BitwardenCredSecretName      = "bitwarden-creds"
-	BitwardenCredSecretNamespace = "external-secrets-operator"
+	BitwardenCredSecretNamespace = common.ExternalSecretsOperatorCommonName
 	BitwardenCredKeyOrgID        = "organization_id"
 	BitwardenCredKeyProjectID    = "project_id"
 )

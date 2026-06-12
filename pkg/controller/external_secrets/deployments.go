@@ -4,12 +4,15 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"time"
 	"unsafe"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/kubernetes/pkg/apis/core"
 	corevalidation "k8s.io/kubernetes/pkg/apis/core/validation"
@@ -66,9 +69,9 @@ func (r *Reconciler) createOrApplyDeployments(esc *operatorv1alpha1.ExternalSecr
 func (r *Reconciler) createOrApplyDeploymentFromAsset(esc *operatorv1alpha1.ExternalSecretsConfig, assetName string, resourceMetadata common.ResourceMetadata,
 	externalSecretsConfigCreateRecon bool,
 ) error {
-	deployment, err := r.getDeploymentObject(assetName, esc, resourceMetadata)
-	if err != nil {
-		return err
+	deployment, trustedCAErr := r.getDeploymentObject(assetName, esc, resourceMetadata)
+	if deployment == nil {
+		return trustedCAErr
 	}
 
 	deploymentName := fmt.Sprintf("%s/%s", deployment.GetNamespace(), deployment.GetName())
@@ -96,6 +99,9 @@ func (r *Reconciler) createOrApplyDeploymentFromAsset(esc *operatorv1alpha1.Exte
 		r.log.V(4).Info("deployment resource already exists and is in expected state", "name", deploymentName)
 	}
 
+	if trustedCAErr != nil {
+		return trustedCAErr
+	}
 	return nil
 }
 
@@ -119,6 +125,15 @@ func (r *Reconciler) getDeploymentObject(assetName string, esc *operatorv1alpha1
 	switch assetName {
 	case controllerDeploymentAssetName:
 		r.updateContainerSpec(deployment, esc, image, logLevel)
+		if err := r.applyUserCABundleConfig(deployment, esc); err != nil {
+			wrapped := fmt.Errorf("failed to apply user CA bundle config: %w", err)
+			// When the referenced ConfigMap is missing, the deployment spec is updated to remove
+			// the user CA volume so the operand does not retain a stale mount reference.
+			if common.IsUserTrustedCABundleNotFound(err) {
+				return deployment, wrapped
+			}
+			return nil, wrapped
+		}
 	case webhookDeploymentAssetName:
 		checkInterval := normalizeDurationArg("5m")
 		if esc.Spec.ApplicationConfig.WebhookConfig != nil &&
@@ -147,12 +162,10 @@ func (r *Reconciler) getDeploymentObject(assetName string, esc *operatorv1alpha1
 	if err := r.updateNodeSelector(deployment, esc); err != nil {
 		return nil, fmt.Errorf("failed to update node selector: %w", err)
 	}
-	if err := r.updateProxyConfiguration(deployment, esc); err != nil {
-		return nil, fmt.Errorf("failed to update proxy configuration: %w", err)
-	}
 	if err := r.applyUserDeploymentConfigs(deployment, esc, assetName); err != nil {
 		return nil, fmt.Errorf("failed to apply user deployment configuration: %w", err)
 	}
+	r.updateProxyConfiguration(deployment, esc)
 
 	return deployment, nil
 }
@@ -480,223 +493,292 @@ func updateSecretVolumeConfig(deployment *appsv1.Deployment, volumeName, secretN
 	})
 }
 
-// updateProxyConfiguration applies all proxy-related configuration to the deployment.
-func (r *Reconciler) updateProxyConfiguration(deployment *appsv1.Deployment, esc *operatorv1alpha1.ExternalSecretsConfig) error {
-	proxyConfig, err := r.getProxyConfiguration(esc)
-	if err != nil {
-		return fmt.Errorf("failed to get proxy configuration: %w", err)
+// updateProxyConfiguration applies or removes all proxy-related deployment configuration
+// (environment variables and trusted CA bundle volume/mounts) based on proxy configuration.
+func (r *Reconciler) updateProxyConfiguration(deployment *appsv1.Deployment, esc *operatorv1alpha1.ExternalSecretsConfig) {
+	if r.isProxyEnabled() {
+		proxyConfig, _ := r.getProxyConfiguration(esc)
+		applyProxyEnvironmentVariables(deployment, proxyConfig)
+		applyTrustedCABundleVolumes(deployment)
+		return
 	}
-
-	r.updateProxyEnvironmentVariables(deployment, proxyConfig)
-	if err := r.updateTrustedCABundleVolumes(deployment, proxyConfig); err != nil {
-		return fmt.Errorf("failed to update trusted CA bundle volumes: %w", err)
-	}
-
-	return nil
+	removeProxyEnvironmentVariables(deployment)
+	removeTrustedCABundleVolumes(deployment)
 }
 
-// updateProxyEnvironmentVariables sets or removes proxy environment variables on all containers and init containers in the deployment.
-func (r *Reconciler) updateProxyEnvironmentVariables(deployment *appsv1.Deployment, proxyConfig *operatorv1alpha1.ProxyConfig) {
-	// Apply proxy environment variables to all containers
+// applyProxyEnvironmentVariables sets proxy environment variables on all containers and init containers.
+func applyProxyEnvironmentVariables(deployment *appsv1.Deployment, proxyConfig *operatorv1alpha1.ProxyConfig) {
 	for i := range deployment.Spec.Template.Spec.Containers {
-		container := &deployment.Spec.Template.Spec.Containers[i]
-		if proxyConfig != nil {
-			r.setProxyEnvVars(container, proxyConfig)
-		} else {
-			r.removeProxyEnvVars(container)
+		setProxyEnvVars(&deployment.Spec.Template.Spec.Containers[i], proxyConfig)
+	}
+	for i := range deployment.Spec.Template.Spec.InitContainers {
+		setProxyEnvVars(&deployment.Spec.Template.Spec.InitContainers[i], proxyConfig)
+	}
+}
+
+// removeProxyEnvironmentVariables removes proxy environment variables from all containers and init containers.
+func removeProxyEnvironmentVariables(deployment *appsv1.Deployment) {
+	for i := range deployment.Spec.Template.Spec.Containers {
+		removeProxyEnvVars(&deployment.Spec.Template.Spec.Containers[i])
+	}
+	for i := range deployment.Spec.Template.Spec.InitContainers {
+		removeProxyEnvVars(&deployment.Spec.Template.Spec.InitContainers[i])
+	}
+}
+
+// mergeContainerEnvVars updates, adds, or removes environment variables in the target container
+// based on the provided map. Existing variables matching keys in the map are updated with their
+// new values, while keys with empty string values are removed from the container. Any entirely
+// new keys are appended, and unmanaged environment variables are untouched.
+func mergeContainerEnvVars(container *corev1.Container, envVars map[string]string) {
+	if envVars == nil {
+		return
+	}
+
+	newEnv := make([]corev1.EnvVar, 0, len(container.Env)+len(envVars))
+
+	for name, value := range envVars {
+		if value != "" {
+			newEnv = append(newEnv, corev1.EnvVar{
+				Name:  name,
+				Value: value,
+			})
 		}
 	}
 
-	// Apply proxy environment variables to all init containers
-	for i := range deployment.Spec.Template.Spec.InitContainers {
-		initContainer := &deployment.Spec.Template.Spec.InitContainers[i]
-		if proxyConfig != nil {
-			r.setProxyEnvVars(initContainer, proxyConfig)
-		} else {
-			r.removeProxyEnvVars(initContainer)
+	for _, env := range container.Env {
+		if _, exists := envVars[env.Name]; !exists {
+			newEnv = append(newEnv, env)
 		}
 	}
+
+	container.Env = newEnv
+}
+
+// pruneContainerEnvVars filters out specified environment variables from the target container.
+// It removes any variable whose name matches an entry in the target slice, effectively
+// cleaning up configurations that are no longer required by the controller lifecycle.
+// Variables not present in the target slice remain entirely unaffected.
+func pruneContainerEnvVars(container *corev1.Container, envVars []string) {
+	if len(container.Env) == 0 || len(envVars) == 0 {
+		return
+	}
+
+	filteredEnv := make([]corev1.EnvVar, 0, len(container.Env))
+	for _, env := range container.Env {
+		if slices.Contains(envVars, env.Name) {
+			continue
+		}
+		filteredEnv = append(filteredEnv, env)
+	}
+
+	container.Env = filteredEnv
 }
 
 // setProxyEnvVars sets proxy environment variables on a container.
-func (r *Reconciler) setProxyEnvVars(container *corev1.Container, proxyConfig *operatorv1alpha1.ProxyConfig) {
+func setProxyEnvVars(container *corev1.Container, proxyConfig *operatorv1alpha1.ProxyConfig) {
 	if proxyConfig == nil {
 		return
 	}
 
-	setEnvVar := func(name, value string) {
-		if value == "" {
-			return
-		}
-
-		if container.Env == nil {
-			container.Env = []corev1.EnvVar{}
-		}
-
-		// Check if the environment variable already exists
-		for i, env := range container.Env {
-			if env.Name == name {
-				container.Env[i].Value = value
-				return
-			}
-		}
-
-		// Add new environment variable if it doesn't exist
-		container.Env = append(container.Env, corev1.EnvVar{
-			Name:  name,
-			Value: value,
-		})
+	envVars := map[string]string{
+		httpProxyEnvVar:           proxyConfig.HTTPProxy,
+		httpsProxyEnvVar:          proxyConfig.HTTPSProxy,
+		noProxyEnvVar:             proxyConfig.NoProxy,
+		httpProxyEnvVarLowercase:  proxyConfig.HTTPProxy,
+		httpsProxyEnvVarLowercase: proxyConfig.HTTPSProxy,
+		noProxyEnvVarLowercase:    proxyConfig.NoProxy,
 	}
 
-	// Set proxy environment variables
-	setEnvVar(httpProxyEnvVar, proxyConfig.HTTPProxy)
-	setEnvVar(httpsProxyEnvVar, proxyConfig.HTTPSProxy)
-	setEnvVar(noProxyEnvVar, proxyConfig.NoProxy)
-
-	setEnvVar(httpProxyEnvVarLowercase, proxyConfig.HTTPProxy)
-	setEnvVar(httpsProxyEnvVarLowercase, proxyConfig.HTTPSProxy)
-	setEnvVar(noProxyEnvVarLowercase, proxyConfig.NoProxy)
+	mergeContainerEnvVars(container, envVars)
 }
 
 // removeProxyEnvVars removes proxy environment variables from a container.
-func (r *Reconciler) removeProxyEnvVars(container *corev1.Container) {
-	if len(container.Env) == 0 {
-		return
-	}
-
-	// Helper function to check if an env var name is a proxy variable
-	isProxyEnvVar := func(name string) bool {
-		switch name {
-		case httpProxyEnvVar, httpsProxyEnvVar, noProxyEnvVar,
-			httpProxyEnvVarLowercase, httpsProxyEnvVarLowercase, noProxyEnvVarLowercase:
-			return true
-		default:
-			return false
-		}
-	}
-
-	// Filter out proxy environment variables
-	filteredEnv := make([]corev1.EnvVar, 0, len(container.Env))
-	for _, env := range container.Env {
-		if !isProxyEnvVar(env.Name) {
-			filteredEnv = append(filteredEnv, env)
-		}
-	}
-	container.Env = filteredEnv
+func removeProxyEnvVars(container *corev1.Container) {
+	proxyEnvVars := []string{httpProxyEnvVar, httpsProxyEnvVar, noProxyEnvVar,
+		httpProxyEnvVarLowercase, httpsProxyEnvVarLowercase, noProxyEnvVarLowercase}
+	pruneContainerEnvVars(container, proxyEnvVars)
 }
 
-// updateTrustedCABundleVolumes adds or removes trusted CA bundle volume and volume mounts to/from the deployment
-// based on proxy configuration presence.
-func (r *Reconciler) updateTrustedCABundleVolumes(deployment *appsv1.Deployment, proxyConfig *operatorv1alpha1.ProxyConfig) error {
-	if proxyConfig != nil {
-		// Add trusted CA bundle volume and volume mounts
-		return r.addTrustedCABundleVolumes(deployment)
-	} else {
-		// Remove trusted CA bundle volume and volume mounts
-		return r.removeTrustedCABundleVolumes(deployment)
+func updateVolumeMount(container *corev1.Container, volumeName, volumeMountPath string) {
+	mount := corev1.VolumeMount{
+		Name:      volumeName,
+		MountPath: volumeMountPath,
+		ReadOnly:  true,
 	}
+
+	for i, existing := range container.VolumeMounts {
+		if existing.Name == volumeName {
+			container.VolumeMounts[i] = mount
+			return
+		}
+	}
+	container.VolumeMounts = append(container.VolumeMounts, mount)
 }
 
-// addTrustedCABundleVolumes adds trusted CA bundle volume and volume mounts to the deployment.
-func (r *Reconciler) addTrustedCABundleVolumes(deployment *appsv1.Deployment) error {
-	// Add the trusted CA bundle volume to the pod spec
-	trustedCAVolume := corev1.Volume{
-		Name: trustedCABundleVolumeName,
+// upsertConfigMapVolume adds or updates a ConfigMap volume on the deployment pod spec.
+func upsertConfigMapVolume(deployment *appsv1.Deployment, configMapName, configMapKeyName, volumeName, volumeKeyPath string) {
+	volume := corev1.Volume{
+		Name: volumeName,
 		VolumeSource: corev1.VolumeSource{
 			ConfigMap: &corev1.ConfigMapVolumeSource{
 				LocalObjectReference: corev1.LocalObjectReference{
-					Name: trustedCABundleConfigMapName,
+					Name: configMapName,
 				},
+				DefaultMode: ptr.To(int32(420)),
 			},
 		},
 	}
 
-	// Check if the volume already exists, if not add it
-	volumeExists := false
-	for i, volume := range deployment.Spec.Template.Spec.Volumes {
-		if volume.Name == trustedCABundleVolumeName {
-			deployment.Spec.Template.Spec.Volumes[i] = trustedCAVolume
-			volumeExists = true
-			break
+	if configMapKeyName != "" && volumeKeyPath != "" {
+		volume.ConfigMap.Items = append(volume.VolumeSource.ConfigMap.Items, corev1.KeyToPath{
+			Key:  configMapKeyName,
+			Path: volumeKeyPath,
+		})
+	}
+
+	for i, vol := range deployment.Spec.Template.Spec.Volumes {
+		if vol.Name == volumeName {
+			deployment.Spec.Template.Spec.Volumes[i] = volume
+			return
 		}
 	}
-	if !volumeExists {
-		deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, trustedCAVolume)
-	}
-
-	// Add volume mounts to all containers and init containers
-	trustedCAVolumeMount := corev1.VolumeMount{
-		Name:      trustedCABundleVolumeName,
-		MountPath: trustedCABundleMountPath,
-		ReadOnly:  true,
-	}
-
-	// Add volume mount to all containers
-	for i := range deployment.Spec.Template.Spec.Containers {
-		container := &deployment.Spec.Template.Spec.Containers[i]
-		r.addTrustedCAVolumeMount(container, trustedCAVolumeMount)
-	}
-
-	// Add volume mount to all init containers
-	for i := range deployment.Spec.Template.Spec.InitContainers {
-		initContainer := &deployment.Spec.Template.Spec.InitContainers[i]
-		r.addTrustedCAVolumeMount(initContainer, trustedCAVolumeMount)
-	}
-
-	return nil
+	deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, volume)
 }
 
-// removeTrustedCABundleVolumes removes trusted CA bundle volume and volume mounts from the deployment.
-func (r *Reconciler) removeTrustedCABundleVolumes(deployment *appsv1.Deployment) error {
-	// Remove the trusted CA bundle volume from the pod spec
-	var filteredVolumes []corev1.Volume
-	for _, volume := range deployment.Spec.Template.Spec.Volumes {
-		if volume.Name != trustedCABundleVolumeName {
-			filteredVolumes = append(filteredVolumes, volume)
-		}
-	}
-	deployment.Spec.Template.Spec.Volumes = filteredVolumes
-
-	// Remove volume mounts from all containers
-	for i := range deployment.Spec.Template.Spec.Containers {
-		container := &deployment.Spec.Template.Spec.Containers[i]
-		r.removeTrustedCAVolumeMount(container)
-	}
-
-	// Remove volume mounts from all init containers
-	for i := range deployment.Spec.Template.Spec.InitContainers {
-		initContainer := &deployment.Spec.Template.Spec.InitContainers[i]
-		r.removeTrustedCAVolumeMount(initContainer)
-	}
-
-	return nil
-}
-
-// addTrustedCAVolumeMount adds the trusted CA bundle volume mount to a container if it doesn't already exist.
-func (r *Reconciler) addTrustedCAVolumeMount(container *corev1.Container, trustedCAVolumeMount corev1.VolumeMount) {
-	// Check if the volume mount already exists, if not add it
-	volumeMountExists := false
-	for j, volumeMount := range container.VolumeMounts {
-		if volumeMount.Name == trustedCABundleVolumeName {
-			container.VolumeMounts[j] = trustedCAVolumeMount
-			volumeMountExists = true
-			break
-		}
-	}
-	if !volumeMountExists {
-		container.VolumeMounts = append(container.VolumeMounts, trustedCAVolumeMount)
-	}
-}
-
-// removeTrustedCAVolumeMount removes the trusted CA bundle volume mount from a container.
-func (r *Reconciler) removeTrustedCAVolumeMount(container *corev1.Container) {
+func pruneVolumeMount(container *corev1.Container, volumeName string) {
 	var filteredVolumeMounts []corev1.VolumeMount
 	for _, volumeMount := range container.VolumeMounts {
-		if volumeMount.Name != trustedCABundleVolumeName {
+		if volumeMount.Name != volumeName {
 			filteredVolumeMounts = append(filteredVolumeMounts, volumeMount)
 		}
 	}
 	container.VolumeMounts = filteredVolumeMounts
+}
+
+// prunePodVolume removes a volume from the deployment pod spec.
+func prunePodVolume(deployment *appsv1.Deployment, volumeName string) {
+	var filteredVolumes []corev1.Volume
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.Name != volumeName {
+			filteredVolumes = append(filteredVolumes, volume)
+		}
+	}
+	deployment.Spec.Template.Spec.Volumes = filteredVolumes
+}
+
+// applyTrustedCABundleVolumes adds the operator-managed trusted CA bundle volume and mounts it on all containers and init containers.
+func applyTrustedCABundleVolumes(deployment *appsv1.Deployment) {
+	upsertConfigMapVolume(deployment, ProxyTrustedCABundleConfigMapName, "", ProxyTrustedCABundleVolumeName, "")
+	for i := range deployment.Spec.Template.Spec.Containers {
+		updateVolumeMount(&deployment.Spec.Template.Spec.Containers[i], ProxyTrustedCABundleVolumeName, ProxyTrustedCABundleMountPath)
+	}
+	for i := range deployment.Spec.Template.Spec.InitContainers {
+		updateVolumeMount(&deployment.Spec.Template.Spec.InitContainers[i], ProxyTrustedCABundleVolumeName, ProxyTrustedCABundleMountPath)
+	}
+}
+
+// removeTrustedCABundleVolumes removes the operator-managed trusted CA bundle volume and mounts from all containers and init containers.
+func removeTrustedCABundleVolumes(deployment *appsv1.Deployment) {
+	prunePodVolume(deployment, ProxyTrustedCABundleVolumeName)
+	for i := range deployment.Spec.Template.Spec.Containers {
+		pruneVolumeMount(&deployment.Spec.Template.Spec.Containers[i], ProxyTrustedCABundleVolumeName)
+	}
+	for i := range deployment.Spec.Template.Spec.InitContainers {
+		pruneVolumeMount(&deployment.Spec.Template.Spec.InitContainers[i], ProxyTrustedCABundleVolumeName)
+	}
+}
+
+// applyUserCABundleConfig validates the user-specified trustedCABundle ConfigMap and, when valid,
+// mounts it into the controller deployment and sets SSL_CERT_DIR on the core controller container.
+// Skip and error conditions:
+//   - trustedCABundle is nil → remove any existing user CA bundle config, no-op
+//   - CM NotFound → remove user CA config from deployment, TrustedCABundleError (Degraded + requeue)
+//   - CM key missing or invalid PEM → fail closed (keep existing mount), TrustedCABundleError
+//     (Degraded; recovery via ConfigMap watch)
+//   - CM has TrustedCABundleInjectLabel AND proxy is configured → skip user mount; CNO reconciles
+//     this ConfigMap and the proxy trusted CA bundle is already mounted at /etc/pki/tls/certs
+func (r *Reconciler) applyUserCABundleConfig(deployment *appsv1.Deployment, esc *operatorv1alpha1.ExternalSecretsConfig) error {
+	ref := esc.Spec.ControllerConfig.TrustedCABundle
+	if ref == nil {
+		r.removeUserCABundleConfig(deployment)
+		r.now.Reset()
+		return nil
+	}
+
+	namespacedName := types.NamespacedName{Name: ref.Name, Namespace: getNamespace(esc)}
+	cm := &corev1.ConfigMap{}
+	if err := r.getWithCacheFallback(namespacedName, cm); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.removeUserCABundleConfig(deployment)
+			return common.NewUserTrustedCABundleError(err, "trustedCABundle ConfigMap %q not found", namespacedName)
+		}
+		return common.FromClientError(err, "failed to fetch trustedCABundle ConfigMap %q", namespacedName)
+	}
+
+	// Label before validation so administrators can recover from invalid PEM via resource watch.
+	if err := r.updateWatchLabel(namespacedName, &corev1.ConfigMap{}); err != nil {
+		return common.FromClientError(err, "failed to patch watch label on trustedCABundle ConfigMap %q", namespacedName)
+	}
+
+	// Skip mounting when the CM is CNO-managed (inject-trusted-cabundle label) and proxy is
+	// configured in cluster: the operator-managed ConfigMap already receives the same cluster CAs from CNO
+	// and is mounted at /etc/pki/tls/certs by the existing proxy CA bundle mechanism.
+	if cm.Labels[TrustedCABundleInjectLabel] == "true" && r.isProxyEnabled() {
+		r.log.V(1).Info("trustedCABundle ConfigMap is CNO-managed and proxy is configured, skipping user CA bundle mount", "name", namespacedName)
+		r.removeUserCABundleConfig(deployment)
+		r.eventRecorder.Eventf(
+			esc,
+			corev1.EventTypeNormal,
+			trustedCABundleEventSkippedCNOProxy,
+			"trustedCABundle ConfigMap %q is CNO-managed and proxy is configured; user CA mount skipped because cluster trusted CA bundle is already mounted for proxy",
+			namespacedName,
+		)
+		return nil
+	}
+
+	key := ref.Key
+	if key == "" {
+		key = UserCABundleKeyPath
+	}
+	data, ok := cm.Data[key]
+	if !ok {
+		return common.NewUserTrustedCABundleError(
+			fmt.Errorf("key %q not found", key),
+			"trustedCABundle ConfigMap %q does not contain key %q",
+			namespacedName, key,
+		)
+	}
+
+	if err := r.validateTrustedCABundleData(esc, namespacedName, key, data); err != nil {
+		return common.NewUserTrustedCABundleError(err, "trustedCABundle ConfigMap %q key %q has invalid PEM", namespacedName, key)
+	}
+
+	// Add or replace the user CA bundle volume and mount it on the core controller container only.
+	upsertConfigMapVolume(deployment, ref.Name, key, UserCABundleVolumeName, UserCABundleKeyPath)
+	for i := range deployment.Spec.Template.Spec.Containers {
+		container := &deployment.Spec.Template.Spec.Containers[i]
+		if container.Name == OperandCoreControllerContainer {
+			updateVolumeMount(container, UserCABundleVolumeName, UserCABundleMountPath)
+			mergeContainerEnvVars(container, map[string]string{SSLCertDirEnvVar: SSLCertDirValue})
+			break
+		}
+	}
+	return nil
+}
+
+// removeUserCABundleConfig removes the user CA bundle volume, volume mount, and SSL_CERT_DIR
+// env var from the controller deployment when trustedCABundle is no longer configured or valid.
+func (r *Reconciler) removeUserCABundleConfig(deployment *appsv1.Deployment) {
+	prunePodVolume(deployment, UserCABundleVolumeName)
+	for i := range deployment.Spec.Template.Spec.Containers {
+		container := &deployment.Spec.Template.Spec.Containers[i]
+		if container.Name == OperandCoreControllerContainer {
+			pruneVolumeMount(container, UserCABundleVolumeName)
+			pruneContainerEnvVars(container, []string{SSLCertDirEnvVar})
+			break
+		}
+	}
 }
 
 // applyUserDeploymentConfigs updates the deployment resource spec with user specified configurations.
@@ -717,7 +799,7 @@ func (r *Reconciler) applyUserDeploymentConfigs(deployment *appsv1.Deployment, e
 			if len(i.OverrideEnv) > 0 {
 				for j := range deployment.Spec.Template.Spec.Containers {
 					if deployment.Spec.Template.Spec.Containers[j].Name == containerName {
-						mergeEnvVars(&deployment.Spec.Template.Spec.Containers[j], i.OverrideEnv)
+						mergeUserEnvVars(&deployment.Spec.Template.Spec.Containers[j], i.OverrideEnv)
 						break
 					}
 				}
@@ -729,8 +811,9 @@ func (r *Reconciler) applyUserDeploymentConfigs(deployment *appsv1.Deployment, e
 	return nil
 }
 
-// mergeEnvVars merges user-defined environment variables into a container, User-defined values take precedence over existing values.
-func mergeEnvVars(container *corev1.Container, overrideEnv []corev1.EnvVar) {
+// mergeUserEnvVars merges user-defined environment variables into a container.
+// User-defined values take precedence over existing values.
+func mergeUserEnvVars(container *corev1.Container, overrideEnv []corev1.EnvVar) {
 	if container.Env == nil {
 		container.Env = []corev1.EnvVar{}
 	}
@@ -760,7 +843,7 @@ func getComponentNameFromAsset(assetName string) (operatorv1alpha1.ComponentName
 	case certControllerDeploymentAssetName:
 		return operatorv1alpha1.CertController, OperandCertControllerContainer, nil
 	case bitwardenDeploymentAssetName:
-		return operatorv1alpha1.BitwardenSDKServer, bitwardenContainerName, nil
+		return operatorv1alpha1.BitwardenSDKServer, OperandBitwardenContainer, nil
 	default:
 		return "", "", fmt.Errorf("unknown deployment asset name: %s", assetName)
 	}

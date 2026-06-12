@@ -46,13 +46,14 @@ import (
 	. "github.com/onsi/gomega"
 
 	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
+	"github.com/openshift/external-secrets-operator/pkg/controller/common"
+	externalsecrets "github.com/openshift/external-secrets-operator/pkg/controller/external_secrets"
 	"github.com/openshift/external-secrets-operator/test/utils"
 )
 
 const (
 	bitwardenTLSSecretName            = "bitwarden-tls-certs"
 	bitwardenSDKServerPodPrefix       = "bitwarden-sdk-server"
-	bitwardenOperandWebhookPodPrefix  = "external-secrets-webhook-"
 	bitwardenPushSecretResourceName   = "bitwarden-push-secret"
 	bitwardenExternalSecretByNameName = "bitwarden-external-secret-by-name"
 	bitwardenExternalSecretByUUIDName = "bitwarden-external-secret"
@@ -78,7 +79,7 @@ func ensureBitwardenOperandReady(ctx context.Context) error {
 	}
 
 	esc := &operatorv1alpha1.ExternalSecretsConfig{}
-	if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esc); err != nil {
+	if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc); err != nil {
 		if k8serrors.IsNotFound(err) {
 			createESC, err := loadExternalSecretsConfigFromFileWithBitwardenNetworkPolicy(testassets.ReadFile, externalSecretsFile)
 			if err != nil {
@@ -87,7 +88,7 @@ func ensureBitwardenOperandReady(ctx context.Context) error {
 			if err := runtimeClient.Create(ctx, createESC); err != nil {
 				return err
 			}
-			if err := utils.WaitForExternalSecretsConfigReady(ctx, dynamicClient, "cluster", 2*time.Minute); err != nil {
+			if err := utils.WaitForExternalSecretsConfigReady(ctx, dynamicClient, common.ExternalSecretsConfigObjectName, 2*time.Minute); err != nil {
 				return err
 			}
 		} else {
@@ -97,7 +98,7 @@ func ensureBitwardenOperandReady(ctx context.Context) error {
 		if _, err := ensureBitwardenEgressOnExternalSecretsConfig(ctx, runtimeClient); err != nil {
 			return err
 		}
-		if err := utils.WaitForExternalSecretsConfigReady(ctx, dynamicClient, "cluster", 2*time.Minute); err != nil {
+		if err := utils.WaitForExternalSecretsConfigReady(ctx, dynamicClient, common.ExternalSecretsConfigObjectName, 2*time.Minute); err != nil {
 			return err
 		}
 	}
@@ -124,7 +125,7 @@ func ensureBitwardenOperandReady(ctx context.Context) error {
 
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		esc := &operatorv1alpha1.ExternalSecretsConfig{}
-		if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esc); err != nil {
+		if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc); err != nil {
 			return err
 		}
 		if esc.Spec.Plugins.BitwardenSecretManagerProvider == nil {
@@ -144,7 +145,7 @@ func ensureBitwardenOperandReady(ctx context.Context) error {
 	if err := utils.VerifyPodsReadyByPrefix(ctx, clientset, utils.BitwardenOperandNamespace, []string{bitwardenSDKServerPodPrefix}); err != nil {
 		return err
 	}
-	if err := utils.VerifyPodsReadyByPrefix(ctx, clientset, utils.BitwardenOperandNamespace, []string{bitwardenOperandWebhookPodPrefix}); err != nil {
+	if err := utils.VerifyPodsReadyByPrefix(ctx, clientset, utils.BitwardenOperandNamespace, []string{externalsecrets.OperandWebhookPodPrefix}); err != nil {
 		return err
 	}
 	if err := utils.WaitForBitwardenSDKServerReachableFromCluster(ctx, clientset, 90*time.Second); err != nil {
@@ -194,14 +195,14 @@ var _ = Describe("Bitwarden Provider", Ordered, Label("Provider:Bitwarden", "Sui
 		// Ensure cluster ExternalSecretsConfig exists first so the operator creates the operand namespace (external-secrets).
 		// When this suite runs before the main e2e Describe, create from testdata (with Bitwarden egress network policy) and wait for Ready.
 		esc := &operatorv1alpha1.ExternalSecretsConfig{}
-		if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esc); err != nil {
+		if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc); err != nil {
 			if k8serrors.IsNotFound(err) {
 				By("Creating cluster ExternalSecretsConfig from testdata with Bitwarden egress network policy")
 				createESC, err := loadExternalSecretsConfigFromFileWithBitwardenNetworkPolicy(testassets.ReadFile, externalSecretsFile)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(runtimeClient.Create(ctx, createESC)).To(Succeed())
 				By("Waiting for ExternalSecretsConfig to be Ready")
-				Expect(utils.WaitForExternalSecretsConfigReady(ctx, dynamicClient, "cluster", 2*time.Minute)).To(Succeed())
+				Expect(utils.WaitForExternalSecretsConfigReady(ctx, dynamicClient, common.ExternalSecretsConfigObjectName, 2*time.Minute)).To(Succeed())
 			} else {
 				Expect(err).NotTo(HaveOccurred())
 			}
@@ -214,7 +215,7 @@ var _ = Describe("Bitwarden Provider", Ordered, Label("Provider:Bitwarden", "Sui
 			} else {
 				By("Waiting for ExternalSecretsConfig to be Ready (cluster CR already exists)")
 			}
-			Expect(utils.WaitForExternalSecretsConfigReady(ctx, dynamicClient, "cluster", 2*time.Minute)).To(Succeed())
+			Expect(utils.WaitForExternalSecretsConfigReady(ctx, dynamicClient, common.ExternalSecretsConfigObjectName, 2*time.Minute)).To(Succeed())
 		}
 
 		// Ensure operand namespace exists: create it if missing (e.g. deleted by a previous AfterSuite).
@@ -243,7 +244,7 @@ var _ = Describe("Bitwarden Provider", Ordered, Label("Provider:Bitwarden", "Sui
 		By("Enabling Bitwarden in ExternalSecretsConfig with secretRef")
 		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			esc := &operatorv1alpha1.ExternalSecretsConfig{}
-			if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esc); err != nil {
+			if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc); err != nil {
 				return err
 			}
 			originalESC = esc.DeepCopy()
@@ -277,7 +278,7 @@ var _ = Describe("Bitwarden Provider", Ordered, Label("Provider:Bitwarden", "Sui
 
 		By("Waiting for external-secrets webhook pod to be ready (required for ClusterSecretStore validation)")
 		Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, utils.BitwardenOperandNamespace, []string{
-			bitwardenOperandWebhookPodPrefix,
+			externalsecrets.OperandWebhookPodPrefix,
 		})).To(Succeed())
 
 		By("Verifying bitwarden-sdk-server is reachable from cluster (same network as controller)")
@@ -326,7 +327,7 @@ var _ = Describe("Bitwarden Provider", Ordered, Label("Provider:Bitwarden", "Sui
 			By("Reverting ExternalSecretsConfig Bitwarden plugin")
 			_ = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				esc := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esc); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc); err != nil {
 					return err
 				}
 				esc.Spec.Plugins.BitwardenSecretManagerProvider = originalESC.Spec.Plugins.BitwardenSecretManagerProvider
@@ -495,7 +496,7 @@ func ensureBitwardenEgressOnExternalSecretsConfig(ctx context.Context, c client.
 	var updated bool
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		esc := &operatorv1alpha1.ExternalSecretsConfig{}
-		if err := c.Get(ctx, client.ObjectKey{Name: "cluster"}, esc); err != nil {
+		if err := c.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc); err != nil {
 			return err
 		}
 		for _, np := range esc.Spec.ControllerConfig.NetworkPolicies {

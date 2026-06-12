@@ -110,6 +110,25 @@ func TestCreateOrApplyCertificates(t *testing.T) {
 			wantUserConfigErr: true,
 		},
 		{
+			name: "cert manager config enabled but issuer does not exist",
+			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient) {
+				m.ExistsCalls(func(ctx context.Context, ns types.NamespacedName, obj client.Object) (bool, error) {
+					if ns.Name == testIssuerName {
+						return false, nil
+					}
+					return false, nil
+				})
+			},
+			esc: func(esc *v1alpha1.ExternalSecretsConfig) {
+				esc.Spec.ControllerConfig.CertProvider.CertManager.Mode = v1alpha1.Enabled
+				esc.Spec.ControllerConfig.CertProvider.CertManager.IssuerRef.Name = testIssuerName
+				esc.Spec.ControllerConfig.CertProvider.CertManager.IssuerRef.Kind = issuerKind
+			},
+			recon:                 false,
+			wantUserConfigErr:     true,
+			wantUserConfigNotFound: true,
+		},
+		{
 			name: "reconciliation of webhook certificate fails while checking if exists",
 			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient) {
 				m.ExistsCalls(func(ctx context.Context, ns types.NamespacedName, obj client.Object) (bool, error) {

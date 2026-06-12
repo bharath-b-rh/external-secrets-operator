@@ -112,11 +112,9 @@ type ProxyConfig struct {
 	// +optional
 	NoProxy string `json:"noProxy,omitempty"`
 
-	// NetworkPolicyProvisioning defines the management strategy for the proxy egress rule.
-	// When set to Managed, the operator automatically provisions and maintains
-	// a NetworkPolicy allowing traffic to the configured proxy.
-	// If no proxy is configured, no NetworkPolicy will be created
-	// regardless of this setting.
+	// networkPolicyProvisioning defines the management strategy for the proxy egress rule.
+	// When set to Managed, the operator automatically provisions and maintains a NetworkPolicy allowing traffic to the configured proxy.
+	// If no proxy is configured, no NetworkPolicy will be created regardless of this setting.
 	// +kubebuilder:validation:Enum=Managed;Unmanaged
 	// +kubebuilder:default=Managed
 	// +optional

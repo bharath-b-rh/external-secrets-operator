@@ -8,16 +8,66 @@ import (
 	"testing"
 	"time"
 
-	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
-	"github.com/openshift/external-secrets-operator/pkg/controller/client/fakes"
-	"github.com/openshift/external-secrets-operator/pkg/controller/common"
-	"github.com/openshift/external-secrets-operator/pkg/controller/commontest"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
+	"github.com/openshift/external-secrets-operator/pkg/controller/client/fakes"
+	"github.com/openshift/external-secrets-operator/pkg/controller/common"
+	"github.com/openshift/external-secrets-operator/pkg/controller/commontest"
 )
+
+func TestHasManagedOrWatchLabel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		labels map[string]string
+		want   bool
+	}{
+		{
+			name:   "managed label",
+			labels: map[string]string{ManagedResourceLabelKey: ManagedResourceLabelValue},
+			want:   true,
+		},
+		{
+			name:   "watch label",
+			labels: map[string]string{WatchedResourceLabelKey: WatchedResourceLabelValue},
+			want:   true,
+		},
+		{
+			name: "both labels",
+			labels: map[string]string{
+				ManagedResourceLabelKey: ManagedResourceLabelValue,
+				WatchedResourceLabelKey: WatchedResourceLabelValue},
+			want: true,
+		},
+		{
+			name:   "unrelated labels",
+			labels: map[string]string{"foo": "bar"},
+			want:   false,
+		},
+		{
+			name:   "wrong watch value",
+			labels: map[string]string{WatchedResourceLabelKey: "false"},
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := hasManagedOrWatchLabel(tt.labels); got != tt.want {
+				t.Fatalf("hasManagedOrWatchLabel() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestDeploymentFailureConditions(t *testing.T) {
 	t.Parallel()
@@ -43,20 +93,7 @@ func TestDeploymentFailureConditions(t *testing.T) {
 			wantReadyContains:    "irrecoverable error",
 		},
 		{
-			name: "trusted CA bundle error",
-			reconcileErr: common.NewUserConfigurationError(
-				errors.New("invalid pem"),
-				"trustedCABundle ConfigMap %q key %q has invalid PEM",
-				"external-secrets/user-ca", "ca-bundle.crt",
-			),
-			wantDegradedStatus:   metav1.ConditionTrue,
-			wantReadyStatus:      metav1.ConditionFalse,
-			wantReadyReason:      operatorv1alpha1.ReasonFailed,
-			wantDegradedContains: "user configuration is invalid",
-			wantReadyContains:    "user configuration is invalid",
-		},
-		{
-			name: "proxy configuration error",
+			name: "user configuration error",
 			reconcileErr: common.NewUserConfigurationError(
 				errors.New("invalid proxy URL configured"),
 				"externalsecretsconfigs.operator.openshift.io/cluster proxy configuration validation failed",
@@ -85,6 +122,7 @@ func TestDeploymentFailureConditions(t *testing.T) {
 				tt.reconcileErr,
 				common.IsIrrecoverableError(tt.reconcileErr),
 				common.IsUserConfigurationError(tt.reconcileErr),
+				common.IsUserTrustedCABundleError(tt.reconcileErr),
 			)
 
 			if degraded.ObservedGeneration != observedGeneration {
@@ -118,15 +156,10 @@ func TestUserConfigurationFailureResult(t *testing.T) {
 	cmGR := schema.GroupResource{Resource: "configmaps"}
 	notFoundErr := common.NewUserConfigurationError(
 		apierrors.NewNotFound(cmGR, "user-ca"),
-		"trustedCABundle ConfigMap %q not found",
+		"bitwarden TLS secret %q not found",
 		"external-secrets/user-ca",
 	)
 	invalidErr := common.NewUserConfigurationError(
-		errors.New("invalid pem"),
-		"trustedCABundle ConfigMap %q key %q has invalid PEM",
-		"external-secrets/user-ca", "ca-bundle.crt",
-	)
-	proxyErr := common.NewUserConfigurationError(
 		errors.New("invalid proxy URL configured"),
 		"proxy configuration validation failed",
 	)
@@ -144,12 +177,8 @@ func TestUserConfigurationFailureResult(t *testing.T) {
 			wantRequeue:  common.DefaultRequeueTime,
 		},
 		{
-			name:         "invalid PEM waits for ConfigMap watch",
+			name:         "invalid config waits for CR update",
 			reconcileErr: invalidErr,
-		},
-		{
-			name:         "invalid proxy waits for CR update",
-			reconcileErr: proxyErr,
 		},
 		{
 			name:            "status update error is returned",
@@ -185,7 +214,7 @@ func TestReconcileDeploymentFailureResult(t *testing.T) {
 
 	cmGR := schema.GroupResource{Resource: "configmaps"}
 	notFoundErr := fmt.Errorf("failed to apply user CA bundle config: %w",
-		common.NewUserConfigurationError(
+		common.NewUserTrustedCABundleError(
 			apierrors.NewNotFound(cmGR, "user-ca"),
 			"trustedCABundle ConfigMap %q not found",
 			"external-secrets/user-ca",
@@ -283,5 +312,37 @@ func TestReconcileDeploymentFailureResult(t *testing.T) {
 				t.Fatalf("RequeueAfter = %v, want %v", result.RequeueAfter, tt.wantRequeue)
 			}
 		})
+	}
+}
+
+func TestBuildCacheObjectList_ConfigMapNamespaceScope(t *testing.T) {
+	t.Parallel()
+
+	objectList := buildCacheObjectList(false)
+	var byObject cache.ByObject
+	var found bool
+	for obj, cfg := range objectList {
+		if _, ok := obj.(*corev1.ConfigMap); ok {
+			byObject = cfg
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("ConfigMap not in cache object list")
+	}
+	if _, ok := byObject.Namespaces[OperandDefaultNamespace]; !ok {
+		t.Fatalf("expected ConfigMap cache scoped to %q, got namespaces %v", OperandDefaultNamespace, byObject.Namespaces)
+	}
+	if byObject.Label != nil {
+		t.Fatalf("expected no label selector on namespace-scoped ConfigMap cache, got %v", byObject.Label)
+	}
+}
+
+// Ensure commontest namespace matches operand namespace used by getNamespace.
+func TestOperandNamespaceMatchesCommontest(t *testing.T) {
+	t.Parallel()
+	if OperandDefaultNamespace != commontest.TestExternalSecretsNamespace {
+		t.Fatalf("OperandDefaultNamespace %q != commontest %q", OperandDefaultNamespace, commontest.TestExternalSecretsNamespace)
 	}
 }

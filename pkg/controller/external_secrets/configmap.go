@@ -20,13 +20,8 @@ import (
 // This function ensures the correct labels are present so that CNO can manage the CA bundle
 // content as expected.
 func (r *Reconciler) ensureTrustedCABundleConfigMap(esc *operatorv1alpha1.ExternalSecretsConfig, resourceMetadata common.ResourceMetadata) error {
-	proxyConfig, err := r.getProxyConfiguration(esc)
-	if err != nil {
-		return fmt.Errorf("failed to get proxy configuration: %w", err)
-	}
-
 	// Only create ConfigMap if proxy is configured
-	if proxyConfig == nil {
+	if !r.isProxyEnabled() {
 		// TODO: ConfigMap removal when proxy configuration is removed
 		// will be revisited in a follow-up implementation.
 		r.log.V(4).Info("no proxy configuration found, skipping trusted CA bundle ConfigMap creation")
@@ -38,7 +33,7 @@ func (r *Reconciler) ensureTrustedCABundleConfigMap(esc *operatorv1alpha1.Extern
 
 	desiredConfigMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      trustedCABundleConfigMapName,
+			Name:      ProxyTrustedCABundleConfigMapName,
 			Namespace: namespace,
 			Labels:    expectedLabels,
 		},
@@ -77,9 +72,11 @@ func (r *Reconciler) ensureTrustedCABundleConfigMap(esc *operatorv1alpha1.Extern
 		return nil
 	}
 
-	// ConfigMap exists in cache — ensure it has the correct labels and annotations.
+	// ConfigMap exists — ensure it has the correct labels and annotations.
+	// Do not update the data of the ConfigMap since it is managed by CNO.
+	// MergeFetchedAnnotations preserves external annotations (e.g., CNO's openshift.io/owning-component).
 	// Use a metadata-only patch so CNO-managed Data/BinaryData are never touched.
-	if exist && common.ObjectMetadataModified(desiredConfigMap, existingConfigMap, &resourceMetadata) {
+	if common.ObjectMetadataModified(desiredConfigMap, existingConfigMap, &resourceMetadata) {
 		r.log.V(1).Info("trusted CA bundle ConfigMap has been modified, patching metadata to desired state", "name", configMapName)
 		if err := r.patchResourceMetadata(desiredConfigMap, resourceMetadata); err != nil {
 			return common.FromClientError(err, "failed to patch %s trusted CA bundle ConfigMap metadata", configMapName)
@@ -96,6 +93,6 @@ func (r *Reconciler) ensureTrustedCABundleConfigMap(esc *operatorv1alpha1.Extern
 func getTrustedCABundleLabels(resourceLabels map[string]string) map[string]string {
 	labels := make(map[string]string)
 	maps.Copy(labels, resourceLabels)
-	labels[trustedCABundleInjectLabel] = "true"
+	labels[TrustedCABundleInjectLabel] = "true"
 	return labels
 }

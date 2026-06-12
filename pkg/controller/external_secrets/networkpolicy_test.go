@@ -354,7 +354,7 @@ func TestCreateOrApplyCustomNetworkPolicies(t *testing.T) {
 						np := &networkingv1.NetworkPolicy{
 							ObjectMeta: metav1.ObjectMeta{
 								Name:      userNetworkPolicyPrefix + "test-update-policy",
-								Namespace: externalsecretsDefaultNamespace,
+								Namespace: OperandDefaultNamespace,
 							},
 						}
 						np.DeepCopyInto(o)
@@ -810,7 +810,7 @@ func TestReconcileProxyEgressPolicy(t *testing.T) {
 						existing := &networkingv1.NetworkPolicy{
 							ObjectMeta: metav1.ObjectMeta{
 								Name:      proxyEgressPolicyName,
-								Namespace: externalsecretsDefaultNamespace,
+								Namespace: OperandDefaultNamespace,
 							},
 						}
 						existing.DeepCopyInto(o)
@@ -834,7 +834,7 @@ func TestReconcileProxyEgressPolicy(t *testing.T) {
 						existing := &networkingv1.NetworkPolicy{
 							ObjectMeta: metav1.ObjectMeta{
 								Name:      proxyEgressPolicyName,
-								Namespace: externalsecretsDefaultNamespace,
+								Namespace: OperandDefaultNamespace,
 							},
 						}
 						existing.DeepCopyInto(o)
@@ -1005,10 +1005,10 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
 						npList.Items = []networkingv1.NetworkPolicy{
-							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
-							{ObjectMeta: metav1.ObjectMeta{Name: "deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
-							{ObjectMeta: metav1.ObjectMeta{Name: "allow-to-dns", Namespace: externalsecretsDefaultNamespace}},
-							{ObjectMeta: metav1.ObjectMeta{Name: "user-proxy-egress", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-deny-all-traffic", Namespace: OperandDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "deny-all-traffic", Namespace: OperandDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "allow-to-dns", Namespace: OperandDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "user-proxy-egress", Namespace: OperandDefaultNamespace}},
 						}
 					}
 					return nil
@@ -1023,8 +1023,8 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
 						npList.Items = []networkingv1.NetworkPolicy{
-							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
-							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-allow-to-dns", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-deny-all-traffic", Namespace: OperandDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-allow-to-dns", Namespace: OperandDefaultNamespace}},
 						}
 					}
 					return nil
@@ -1048,8 +1048,8 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
 						npList.Items = []networkingv1.NetworkPolicy{
-							{ObjectMeta: metav1.ObjectMeta{Name: "allow-custom-egress", Namespace: externalsecretsDefaultNamespace}},
-							{ObjectMeta: metav1.ObjectMeta{Name: "eso-user-allow-custom-egress", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "allow-custom-egress", Namespace: OperandDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "eso-user-allow-custom-egress", Namespace: OperandDefaultNamespace}},
 						}
 					}
 					return nil
@@ -1073,7 +1073,7 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
 						npList.Items = []networkingv1.NetworkPolicy{
-							{ObjectMeta: metav1.ObjectMeta{Name: "deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "deny-all-traffic", Namespace: OperandDefaultNamespace}},
 						}
 					}
 					return nil
@@ -1091,7 +1091,7 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
 						npList.Items = []networkingv1.NetworkPolicy{
-							{ObjectMeta: metav1.ObjectMeta{Name: "deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "deny-all-traffic", Namespace: OperandDefaultNamespace}},
 						}
 					}
 					return nil
@@ -1108,8 +1108,8 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
 						npList.Items = []networkingv1.NetworkPolicy{
-							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
-							{ObjectMeta: metav1.ObjectMeta{Name: "my-custom-policy", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-deny-all-traffic", Namespace: OperandDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "my-custom-policy", Namespace: OperandDefaultNamespace}},
 						}
 					}
 					return nil
