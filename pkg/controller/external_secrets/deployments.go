@@ -470,7 +470,10 @@ func updateSecretVolumeConfig(deployment *appsv1.Deployment, volumeName, secretN
 
 // updateProxyConfiguration applies all proxy-related configuration to the deployment.
 func (r *Reconciler) updateProxyConfiguration(deployment *appsv1.Deployment, esc *operatorv1alpha1.ExternalSecretsConfig) error {
-	proxyConfig := r.getProxyConfiguration(esc)
+	proxyConfig, err := r.getProxyConfiguration(esc)
+	if err != nil {
+		return fmt.Errorf("failed to get proxy configuration: %w", err)
+	}
 
 	r.updateProxyEnvironmentVariables(deployment, proxyConfig)
 	if err := r.updateTrustedCABundleVolumes(deployment, proxyConfig); err != nil {
@@ -508,13 +511,14 @@ func (r *Reconciler) setProxyEnvVars(container *corev1.Container, proxyConfig *o
 	if proxyConfig == nil {
 		return
 	}
-	if container.Env == nil {
-		container.Env = []corev1.EnvVar{}
-	}
 
 	setEnvVar := func(name, value string) {
 		if value == "" {
 			return
+		}
+
+		if container.Env == nil {
+			container.Env = []corev1.EnvVar{}
 		}
 
 		// Check if the environment variable already exists

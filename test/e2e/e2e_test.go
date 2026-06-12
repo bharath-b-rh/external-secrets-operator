@@ -24,14 +24,19 @@ import (
 	"encoding/base64"
 	"fmt"
 	"maps"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	intstr "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
@@ -74,6 +79,21 @@ const (
 	PushSecretsKind          = "pushsecrets"
 	externalSecretsKind      = "externalsecrets"
 )
+
+const (
+	userNPPrefix            = "eso-user-"
+	npProxyEgressPolicyName = "eso-sys-allow-proxy-egress"
+	managedByLabel          = "app.kubernetes.io/managed-by"
+	partOfLabel             = "app.kubernetes.io/part-of"
+	managedByValue          = "external-secrets-operator"
+)
+
+var expectedStaticNPNames = []string{
+	"eso-sys-deny-all-traffic",
+	"eso-sys-allow-api-server-egress-for-main-controller",
+	"eso-sys-allow-api-server-egress-for-webhook",
+	"eso-sys-allow-to-dns",
+}
 
 var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered, func() {
 	ctx := context.Background()
@@ -713,6 +733,329 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 		})
 	})
 
+	Context("Static Network Policy Naming", func() {
+		listManagedNetworkPolicies := func(ctx context.Context, namespace string) ([]networkingv1.NetworkPolicy, error) {
+			npList, err := clientset.NetworkingV1().NetworkPolicies(namespace).List(ctx, metav1.ListOptions{
+				LabelSelector: fmt.Sprintf("%s=%s,%s=%s", managedByLabel, managedByValue, partOfLabel, managedByValue),
+			})
+			if err != nil {
+				return nil, err
+			}
+			return npList.Items, nil
+		}
+
+		It("should create all static network policies with eso-sys- prefix", func() {
+			By("Listing managed network policies in operand namespace")
+			Eventually(func(g Gomega) {
+				nps, err := listManagedNetworkPolicies(ctx, operandNamespace)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				npNames := make(map[string]bool)
+				for _, np := range nps {
+					npNames[np.Name] = true
+				}
+
+				for _, expected := range expectedStaticNPNames {
+					g.Expect(npNames).To(HaveKey(expected),
+						"static network policy %s should exist", expected)
+				}
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should not have any unprefixed legacy network policies", func() {
+			By("Verifying no unprefixed network policies exist")
+			legacyNames := []string{
+				"deny-all-traffic",
+				"allow-api-server-egress-for-main-controller",
+				"allow-api-server-egress-for-webhook",
+				"allow-api-server-egress-for-cert-controller",
+				"allow-to-dns",
+			}
+
+			Eventually(func(g Gomega) {
+				nps, err := listManagedNetworkPolicies(ctx, operandNamespace)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				npNames := make(map[string]bool)
+				for _, np := range nps {
+					npNames[np.Name] = true
+				}
+
+				for _, legacy := range legacyNames {
+					g.Expect(npNames).NotTo(HaveKey(legacy),
+						"legacy unprefixed network policy %s should have been cleaned up", legacy)
+				}
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		// TODO: Remove this test case after 3 releases(in v1.5.0) once the migration from
+		// unprefixed to eso-sys-/eso-user- network policy names is no longer needed.
+		It("should set the skip-np-cleanup-check annotation on ExternalSecretsConfig after migration",
+			Label("Migration", "PostUpgradeCheck"), func() {
+				By("Verifying the cleanup annotation is present on the CR")
+				Eventually(func(g Gomega) {
+					esc := &operatorv1alpha1.ExternalSecretsConfig{}
+					g.Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esc)).To(Succeed())
+
+					annotations := esc.GetAnnotations()
+					g.Expect(annotations).To(HaveKeyWithValue(
+						"externalsecretsconfig.operator.openshift.io/skip-np-cleanup-check", "true"),
+						"ExternalSecretsConfig should have the skip-np-cleanup-check annotation after migration cleanup")
+				}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+				By("Verifying all managed network policies use the eso-sys- or eso-user- prefix")
+				nps, err := listManagedNetworkPolicies(ctx, operandNamespace)
+				Expect(err).NotTo(HaveOccurred())
+
+				for _, np := range nps {
+					Expect(np.Name).To(SatisfyAny(
+						HavePrefix("eso-sys-"),
+						HavePrefix("eso-user-"),
+					), "managed network policy %s should have eso-sys- or eso-user- prefix after migration", np.Name)
+				}
+			})
+	})
+
+	Context("Custom Network Policy Naming", func() {
+		It("should prepend eso-user- prefix to custom network policies from CR spec", func() {
+			By("Verifying the ExternalSecretsConfig has custom network policies configured")
+			esc := &operatorv1alpha1.ExternalSecretsConfig{}
+			Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esc)).To(Succeed())
+
+			if len(esc.Spec.ControllerConfig.NetworkPolicies) == 0 {
+				Skip("No custom network policies configured in ExternalSecretsConfig")
+			}
+
+			By("Checking that custom policies exist with eso-user- prefix")
+			Eventually(func(g Gomega) {
+				nps, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).List(ctx, metav1.ListOptions{
+					LabelSelector: fmt.Sprintf("%s=%s,%s=%s", managedByLabel, managedByValue, partOfLabel, managedByValue),
+				})
+				g.Expect(err).NotTo(HaveOccurred())
+
+				npNames := make(map[string]bool)
+				for _, np := range nps.Items {
+					npNames[np.Name] = true
+				}
+
+				for _, npConfig := range esc.Spec.ControllerConfig.NetworkPolicies {
+					expectedName := userNPPrefix + npConfig.Name
+					g.Expect(npNames).To(HaveKey(expectedName),
+						"custom network policy should exist as %s (with eso-user- prefix)", expectedName)
+				}
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should create a custom network policy with eso-user- prefix via CR spec update", func() {
+			testPolicyName := "e2e-test-custom-egress"
+			expectedNPName := userNPPrefix + testPolicyName
+
+			By("Adding a custom network policy to the CR")
+			tcp := corev1.ProtocolTCP
+			port8443 := intstr.FromInt32(8443)
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+					return err
+				}
+
+				for _, np := range currentCR.Spec.ControllerConfig.NetworkPolicies {
+					if np.Name == testPolicyName {
+						return nil
+					}
+				}
+
+				currentCR.Spec.ControllerConfig.NetworkPolicies = append(
+					currentCR.Spec.ControllerConfig.NetworkPolicies,
+					operatorv1alpha1.NetworkPolicy{
+						Name:          testPolicyName,
+						ComponentName: operatorv1alpha1.CoreController,
+						Egress: []networkingv1.NetworkPolicyEgressRule{
+							{
+								Ports: []networkingv1.NetworkPolicyPort{
+									{Protocol: &tcp, Port: &port8443},
+								},
+							},
+						},
+					},
+				)
+				return runtimeClient.Update(ctx, currentCR)
+			})
+			Expect(err).NotTo(HaveOccurred(), "should add custom network policy to CR")
+
+			By("Waiting for custom network policy to be created with eso-user- prefix")
+			Eventually(func(g Gomega) {
+				np, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, expectedNPName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred(), "custom network policy %s should exist", expectedNPName)
+				g.Expect(np.Spec.Egress).To(HaveLen(1))
+				g.Expect(np.Spec.Egress[0].Ports).To(HaveLen(1))
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+	})
+
+	// Tests labeled with "Proxy:HTTP" should only be run when a cluster-wide
+	// OpenShift egress proxy is already configured via proxy.config.openshift.io/cluster object
+	Context("Proxy Egress Network Policy", Label("Platform:Generic"), Label("Proxy:HTTP"), func() {
+		var clusterProxyPorts []int32
+
+		BeforeAll(func() {
+			By("Checking cluster-wide proxy configuration exists")
+			proxyGVR := schema.GroupVersionResource{
+				Group:    "config.openshift.io",
+				Version:  "v1",
+				Resource: "proxies",
+			}
+			proxyCR, err := dynamicClient.Resource(proxyGVR).Get(ctx, "cluster", metav1.GetOptions{})
+			Expect(err).NotTo(HaveOccurred(), "should be able to read proxies.config.openshift.io/cluster CR")
+
+			proxyStatus, _, _ := unstructured.NestedMap(proxyCR.Object, "status")
+			httpProxy, _, _ := unstructured.NestedString(proxyCR.Object, "status", "httpProxy")
+			httpsProxy, _, _ := unstructured.NestedString(proxyCR.Object, "status", "httpsProxy")
+			noProxy, _, _ := unstructured.NestedString(proxyCR.Object, "status", "noProxy")
+			Expect(proxyStatus).NotTo(BeNil(), "proxy CR status should exist")
+			Expect(httpProxy != "" || httpsProxy != "" || noProxy != "").To(BeTrue(),
+				"at least one proxy setting (httpProxy, httpsProxy, noProxy) should be configured in the cluster-wide Proxy CR")
+
+			clusterProxyPorts = expectedProxyPorts(httpsProxy, httpProxy)
+		})
+
+		AfterEach(func() {
+			By("Clearing proxy configuration from CR")
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+					return err
+				}
+				currentCR.Spec.ApplicationConfig.Proxy = nil
+				return runtimeClient.Update(ctx, currentCR)
+			})
+			Expect(err).NotTo(HaveOccurred(), "should clear proxy config")
+		})
+
+		// Cluster-wide proxy configuration consumed via OLM env vars.
+		It("should create proxy egress policy when configured with Managed provisioning", Label("Proxy:HTTP"), func() {
+			By("Setting proxy configuration with Managed network policy provisioning")
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+					return err
+				}
+				currentCR.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
+					NetworkPolicyProvisioning: operatorv1alpha1.ManagementStateManaged,
+				}
+				return runtimeClient.Update(ctx, currentCR)
+			})
+			Expect(err).NotTo(HaveOccurred(), "should set proxy config with Managed provisioning")
+
+			By("Waiting for proxy egress network policy to be created with correct port(s)")
+			Eventually(func(g Gomega) {
+				np, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npProxyEgressPolicyName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred(), "proxy egress policy %s should be created", npProxyEgressPolicyName)
+				g.Expect(np.Spec.PolicyTypes).To(ContainElement(networkingv1.PolicyTypeEgress))
+				g.Expect(np.Spec.Egress).NotTo(BeEmpty(), "egress rules should be configured")
+				g.Expect(np.Spec.Egress[0].Ports).To(HaveLen(len(clusterProxyPorts)),
+					"egress port count should match expected proxy ports")
+				for i, wantPort := range clusterProxyPorts {
+					g.Expect(np.Spec.Egress[0].Ports[i].Port.IntVal).To(Equal(wantPort),
+						"egress port[%d] should match the cluster proxy URL port", i)
+				}
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		// Cluster-wide proxy configuration consumed via OLM env vars.
+		It("should remove proxy egress policy when switching from Managed to Unmanaged", func() {
+			By("Setting proxy configuration with Managed provisioning first")
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+					return err
+				}
+				currentCR.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
+					NetworkPolicyProvisioning: operatorv1alpha1.ManagementStateManaged,
+				}
+				return runtimeClient.Update(ctx, currentCR)
+			})
+			Expect(err).NotTo(HaveOccurred(), "should set proxy config with Managed provisioning")
+
+			By("Waiting for proxy egress policy to be created")
+			Eventually(func(g Gomega) {
+				_, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npProxyEgressPolicyName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred(), "proxy egress policy should be created")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Switching to Unmanaged provisioning")
+			err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+					return err
+				}
+				currentCR.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
+					NetworkPolicyProvisioning: operatorv1alpha1.ManagementStateUnmanaged,
+				}
+				return runtimeClient.Update(ctx, currentCR)
+			})
+			Expect(err).NotTo(HaveOccurred(), "should switch to Unmanaged provisioning")
+
+			By("Waiting for proxy egress policy to be removed")
+			Eventually(func(g Gomega) {
+				_, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npProxyEgressPolicyName, metav1.GetOptions{})
+				g.Expect(err).To(HaveOccurred(), "proxy egress policy should be removed after switching to Unmanaged")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		// Proxy configured by user in ESConfig CR
+		It("should not create proxy egress policy when provisioning is Unmanaged and user configured proxy", func() {
+			By("Setting proxy configuration with Unmanaged network policy provisioning")
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+					return err
+				}
+				currentCR.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
+					HTTPProxy:                 "http://proxy.example.com:3128",
+					NetworkPolicyProvisioning: operatorv1alpha1.ManagementStateUnmanaged,
+				}
+				return runtimeClient.Update(ctx, currentCR)
+			})
+			Expect(err).NotTo(HaveOccurred(), "should set proxy config with Unmanaged provisioning")
+
+			By("Verifying proxy egress policy is not created")
+			Eventually(func(g Gomega) {
+				_, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npProxyEgressPolicyName, metav1.GetOptions{})
+				g.Expect(err).To(HaveOccurred(), "proxy egress policy should not exist when provisioning is Unmanaged")
+			}, 30*time.Second, 5*time.Second).Should(Succeed())
+		})
+
+		// Proxy configured by user in ESConfig CR
+		It("should create proxy egress policy when proxy is configured with Managed provisioning and user configured proxy", func() {
+			By("Setting proxy configuration with Managed network policy provisioning")
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+					return err
+				}
+				currentCR.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
+					HTTPProxy:                 "http://proxy.example.com:3128",
+					NetworkPolicyProvisioning: operatorv1alpha1.ManagementStateManaged,
+				}
+				return runtimeClient.Update(ctx, currentCR)
+			})
+			Expect(err).NotTo(HaveOccurred(), "should set proxy config with Managed provisioning")
+
+			By("Waiting for proxy egress network policy to be created with correct port")
+			Eventually(func(g Gomega) {
+				np, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npProxyEgressPolicyName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred(), "proxy egress policy %s should be created", npProxyEgressPolicyName)
+				g.Expect(np.Spec.PolicyTypes).To(ContainElement(networkingv1.PolicyTypeEgress))
+				g.Expect(np.Spec.Egress).NotTo(BeEmpty(), "egress rules should be configured")
+				g.Expect(np.Spec.Egress[0].Ports).To(HaveLen(1), "single HTTP proxy should produce one egress port")
+				g.Expect(np.Spec.Egress[0].Ports[0].Port.IntVal).To(Equal(int32(3128)),
+					"egress port should match the explicit proxy URL port (3128)")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+	})
+
 	AfterAll(func() {
 		By("Deleting the externalsecrets.openshift.operator.io/cluster CR")
 		loader.DeleteFromFile(testassets.ReadFile, externalSecretsFile, "")
@@ -722,3 +1065,42 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			NotTo(HaveOccurred(), "failed to delete test namespace")
 	})
 })
+
+// expectedProxyPorts derives the deduplicated TCP ports the operator should use for the
+// proxy egress NetworkPolicy, mirroring the logic in extractProxyPorts. It collects ports
+// from both httpsProxy and httpProxy URLs. An explicit port in the URL wins; otherwise
+// scheme defaults apply (443 for https, 80 for http).
+func expectedProxyPorts(httpsProxy, httpProxy string) []int32 {
+	seen := map[int32]struct{}{}
+	var ports []int32
+	for _, raw := range []string{httpsProxy, httpProxy} {
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		var port int32
+		if p := u.Port(); p != "" {
+			if v, err := strconv.Atoi(p); err == nil && v > 0 {
+				port = int32(v)
+			}
+		}
+		if port == 0 {
+			switch strings.ToLower(u.Scheme) {
+			case "https":
+				port = 443
+			case "http":
+				port = 80
+			}
+		}
+		if port > 0 {
+			if _, exists := seen[port]; !exists {
+				seen[port] = struct{}{}
+				ports = append(ports, port)
+			}
+		}
+	}
+	return ports
+}

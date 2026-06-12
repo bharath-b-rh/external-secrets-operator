@@ -19,7 +19,10 @@ import (
 // This function ensures the correct labels are present so that CNO can manage the CA bundle
 // content as expected.
 func (r *Reconciler) ensureTrustedCABundleConfigMap(esc *operatorv1alpha1.ExternalSecretsConfig, resourceMetadata common.ResourceMetadata) error {
-	proxyConfig := r.getProxyConfiguration(esc)
+	proxyConfig, err := r.getProxyConfiguration(esc)
+	if err != nil {
+		return fmt.Errorf("failed to get proxy configuration: %w", err)
+	}
 
 	// Only create ConfigMap if proxy is configured
 	if proxyConfig == nil {

@@ -3,6 +3,7 @@ package external_secrets
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
@@ -124,17 +125,29 @@ func (r *Reconciler) IsCertManagerInstalled() bool {
 	return ok
 }
 
+// hasProxyURLs reports whether a ProxyConfig carries at least one proxy URL
+// (HTTPProxy, HTTPSProxy, or NoProxy). Control-plane fields like
+// NetworkPolicyProvisioning are intentionally excluded — they configure
+// operator behavior, not proxy endpoints.
+func hasProxyURLs(p *operatorv1alpha1.ProxyConfig) bool {
+	return p != nil && (p.HTTPProxy != "" || p.HTTPSProxy != "" || p.NoProxy != "")
+}
+
 // getProxyConfiguration returns the proxy configuration based on precedence.
 // The precedence order is: ExternalSecretsConfig > ExternalSecretsManager > OLM environment variables.
-func (r *Reconciler) getProxyConfiguration(esc *operatorv1alpha1.ExternalSecretsConfig) *operatorv1alpha1.ProxyConfig {
+// Only proxy URL fields (HTTPProxy, HTTPSProxy, NoProxy) participate in the
+// precedence decision; a ProxyConfig that carries only control-plane fields
+// (e.g. NetworkPolicyProvisioning) is treated as empty and falls through to the
+// next source. After resolving the URLs, any NetworkPolicyProvisioning value set
+// on the ExternalSecretsConfig CR is merged into the result so that administrators
+// can control network-policy management independently of where the proxy URLs originate.
+func (r *Reconciler) getProxyConfiguration(esc *operatorv1alpha1.ExternalSecretsConfig) (*operatorv1alpha1.ProxyConfig, error) {
 	var proxyConfig *operatorv1alpha1.ProxyConfig
 
-	// Check ExternalSecretsConfig first
 	switch {
-	case esc.Spec.ApplicationConfig.Proxy != nil:
+	case hasProxyURLs(esc.Spec.ApplicationConfig.Proxy):
 		proxyConfig = esc.Spec.ApplicationConfig.Proxy
-	case r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Proxy != nil:
-		// Check ExternalSecretsManager second
+	case r.esm.Spec.GlobalConfig != nil && hasProxyURLs(r.esm.Spec.GlobalConfig.Proxy):
 		proxyConfig = r.esm.Spec.GlobalConfig.Proxy
 	default:
 		// Fall back to OLM environment variables
@@ -152,5 +165,41 @@ func (r *Reconciler) getProxyConfiguration(esc *operatorv1alpha1.ExternalSecrets
 		}
 	}
 
-	return proxyConfig
+	// Merge NetworkPolicyProvisioning from the CR even when proxy URLs came
+	// from a lower-priority source, so administrators can control network-policy
+	// management independently.
+	if crProxy := esc.Spec.ApplicationConfig.Proxy; crProxy != nil && proxyConfig != nil {
+		if crProxy.NetworkPolicyProvisioning != "" {
+			proxyConfig.NetworkPolicyProvisioning = crProxy.NetworkPolicyProvisioning
+		}
+	}
+
+	if proxyConfig != nil {
+		if err := validateProxy(proxyConfig.HTTPProxy); err != nil {
+			return nil, fmt.Errorf("failed to validate HTTP proxy: %w", err)
+		}
+		if err := validateProxy(proxyConfig.HTTPSProxy); err != nil {
+			return nil, fmt.Errorf("failed to validate HTTPS proxy: %w", err)
+		}
+	}
+
+	return proxyConfig, nil
+}
+
+// validateProxy checks if the proxy address configured is a valid URL.
+func validateProxy(rawURL string) error {
+	if rawURL == "" {
+		return nil
+	}
+
+	parsedURL, err := url.ParseRequestURI(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid proxy URL configured: %w", err)
+	}
+
+	if parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return fmt.Errorf("proxy URL must include valid scheme and host")
+	}
+
+	return nil
 }

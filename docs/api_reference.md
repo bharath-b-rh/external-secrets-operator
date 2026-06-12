@@ -481,7 +481,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `name` _string_ | Name is the logical identifier for this network policy entry.<br />The operator prepends "eso-user-" to this value when creating the Kubernetes<br />NetworkPolicy object (e.g. "allow-egress" becomes "eso-user-allow-egress"). |  | MaxLength: 253 <br />MinLength: 1 <br /> |
+| `name` _string_ | Name is the logical identifier for this network policy entry.<br />The operator prepends "eso-user-" to this value when creating the Kubernetes<br />NetworkPolicy object (e.g. "allow-egress" becomes "eso-user-allow-egress").<br />Maximum length is 243 to accommodate the prefix within the 253-character Kubernetes name limit. |  | MaxLength: 243 <br />MinLength: 1 <br /> |
 | `componentName` _[ComponentName](#componentname)_ | componentName specifies which external-secrets component this network policy applies to. |  | Enum: [ExternalSecretsCoreController BitwardenSDKServer] <br /> |
 | `egress` _[NetworkPolicyEgressRule](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.32/#networkpolicyegressrule-v1-networking) array_ | egress is a list of egress rules to be applied to the selected pods. Outgoing traffic<br />is allowed if there are no NetworkPolicies selecting the pod (and cluster policy<br />otherwise allows the traffic), OR if the traffic matches at least one egress rule<br />across all the NetworkPolicy objects whose podSelector matches the pod. If<br />this field is empty then this NetworkPolicy limits all outgoing traffic (and serves<br />solely to ensure that the pods it selects are isolated by default).<br />The operator will automatically handle ingress rules based on the current running ports. |  |  |
 
