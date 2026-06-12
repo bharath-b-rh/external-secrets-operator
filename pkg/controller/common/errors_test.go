@@ -22,22 +22,51 @@ func TestIsUserConfigurationNotFound(t *testing.T) {
 	}{
 		{
 			name: "user configuration error wrapping NotFound",
-			err:  NewUserConfigurationError(notFound, "issuer %q not found", "external-secrets/missing"),
+			err:  NewUserConfigurationError(notFound, "trustedCABundle ConfigMap %q not found", "external-secrets/missing"),
 			want: true,
 		},
 		{
 			name: "wrapped user configuration NotFound",
-			err:  fmt.Errorf("reconcile deployment: %w", NewUserConfigurationError(notFound, "issuer %q not found", "external-secrets/missing")),
+			err:  fmt.Errorf("reconcile deployment: %w", NewUserConfigurationError(notFound, "trustedCABundle ConfigMap %q not found", "external-secrets/missing")),
 			want: true,
 		},
 		{
+			name: "user configuration error missing key",
+			err: NewUserConfigurationError(
+				fmt.Errorf("key %q not found", "ca.crt"),
+				"trustedCABundle ConfigMap %q does not contain key %q",
+				"external-secrets/cm", "ca.crt",
+			),
+			want: false,
+		},
+		{
 			name: "user configuration error invalid PEM",
-			err:  NewUserConfigurationError(errors.New("invalid pem"), "invalid issuer configuration"),
+			err:  NewUserConfigurationError(errors.New("trusted CA bundle contains no valid PEM-encoded CA certificates"), "trustedCABundle ConfigMap %q key %q has invalid PEM", "external-secrets/cm", "ca.crt"),
+			want: false,
+		},
+		{
+			name: "user configuration error invalid proxy URL",
+			err:  NewUserConfigurationError(errors.New("invalid proxy URL configured"), "proxy configuration validation failed"),
 			want: false,
 		},
 		{
 			name: "bare NotFound",
 			err:  notFound,
+			want: false,
+		},
+		{
+			name: "retry required reconcile error",
+			err:  NewRetryRequiredError(notFound, "fetch configmap %q", "user-ca"),
+			want: false,
+		},
+		{
+			name: "irrecoverable reconcile error",
+			err:  NewIrrecoverableError(apierrors.NewForbidden(cmGR, "user-ca", errors.New("denied")), "forbidden"),
+			want: false,
+		},
+		{
+			name: "generic error",
+			err:  errors.New("something failed"),
 			want: false,
 		},
 		{name: "nil error", err: nil, want: false},
@@ -48,54 +77,6 @@ func TestIsUserConfigurationNotFound(t *testing.T) {
 			t.Parallel()
 			if got := IsUserConfigurationNotFound(tt.err); got != tt.want {
 				t.Fatalf("IsUserConfigurationNotFound() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestIsUserTrustedCABundleNotFound(t *testing.T) {
-	t.Parallel()
-
-	cmGR := schema.GroupResource{Resource: "configmaps"}
-	notFound := apierrors.NewNotFound(cmGR, "missing")
-
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{
-			name: "trusted CA bundle error wrapping NotFound",
-			err:  NewUserTrustedCABundleError(notFound, "trustedCABundle ConfigMap %q not found", "external-secrets/missing"),
-			want: true,
-		},
-		{
-			name: "wrapped trusted CA bundle NotFound",
-			err:  fmt.Errorf("reconcile deployment: %w", NewUserTrustedCABundleError(notFound, "trustedCABundle ConfigMap %q not found", "external-secrets/missing")),
-			want: true,
-		},
-		{
-			name: "trusted CA bundle error missing key",
-			err: NewUserTrustedCABundleError(
-				fmt.Errorf("key %q not found", "ca.crt"),
-				"trustedCABundle ConfigMap %q does not contain key %q",
-				"external-secrets/cm", "ca.crt",
-			),
-			want: false,
-		},
-		{
-			name: "user configuration NotFound is not trusted CA NotFound",
-			err:  NewUserConfigurationError(notFound, "issuer %q not found", "external-secrets/missing"),
-			want: false,
-		},
-		{name: "nil error", err: nil, want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := IsUserTrustedCABundleNotFound(tt.err); got != tt.want {
-				t.Fatalf("IsUserTrustedCABundleNotFound() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -112,15 +93,36 @@ func TestIsUserConfigurationError(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "user configuration error",
-			err:  NewUserConfigurationError(notFound, "issuer %q not found", "external-secrets/missing"),
+			name: "trusted CA bundle user configuration error",
+			err:  NewUserConfigurationError(notFound, "trustedCABundle ConfigMap %q not found", "external-secrets/missing"),
 			want: true,
 		},
 		{
-			name: "trusted CA bundle error is not user configuration",
-			err:  NewUserTrustedCABundleError(notFound, "trustedCABundle ConfigMap %q not found", "external-secrets/missing"),
+			name: "proxy user configuration error",
+			err:  NewUserConfigurationError(errors.New("invalid proxy URL"), "proxy configuration validation failed"),
+			want: true,
+		},
+		{
+			name: "wrapped user configuration error",
+			err:  fmt.Errorf("apply user CA: %w", NewUserConfigurationError(errors.New("invalid pem"), "invalid PEM")),
+			want: true,
+		},
+		{
+			name: "client NotFound maps to retry required",
+			err:  FromClientError(notFound, "failed to fetch trustedCABundle ConfigMap %q", "external-secrets/missing"),
 			want: false,
 		},
+		{
+			name: "irrecoverable reconcile error",
+			err:  NewIrrecoverableError(apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "user-ca", errors.New("denied")), "forbidden"),
+			want: false,
+		},
+		{
+			name: "retry required reconcile error",
+			err:  NewRetryRequiredError(errors.New("timeout"), "temporary failure"),
+			want: false,
+		},
+		{name: "bare NotFound", err: notFound, want: false},
 		{name: "nil error", err: nil, want: false},
 	}
 
@@ -129,39 +131,6 @@ func TestIsUserConfigurationError(t *testing.T) {
 			t.Parallel()
 			if got := IsUserConfigurationError(tt.err); got != tt.want {
 				t.Fatalf("IsUserConfigurationError() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestIsUserTrustedCABundleError(t *testing.T) {
-	t.Parallel()
-
-	notFound := apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "missing")
-
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{
-			name: "trusted CA bundle error",
-			err:  NewUserTrustedCABundleError(notFound, "trustedCABundle ConfigMap %q not found", "external-secrets/missing"),
-			want: true,
-		},
-		{
-			name: "user configuration error is not trusted CA bundle",
-			err:  NewUserConfigurationError(notFound, "issuer %q not found", "external-secrets/missing"),
-			want: false,
-		},
-		{name: "nil error", err: nil, want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := IsUserTrustedCABundleError(tt.err); got != tt.want {
-				t.Fatalf("IsUserTrustedCABundleError() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -183,13 +152,33 @@ func TestIsIrrecoverableError(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "user configuration error",
-			err:  NewUserConfigurationError(apierrors.NewNotFound(cmGR, "missing"), "issuer %q not found", "external-secrets/missing"),
+			name: "forbidden client error",
+			err:  FromClientError(apierrors.NewForbidden(cmGR, "user-ca", errors.New("denied")), "patch configmap %q", "user-ca"),
+			want: true,
+		},
+		{
+			name: "unauthorized client error",
+			err:  FromClientError(apierrors.NewUnauthorized("unauthorized"), "get configmap"),
+			want: true,
+		},
+		{
+			name: "invalid client error",
+			err:  FromClientError(apierrors.NewInvalid(schema.GroupKind{Kind: "ConfigMap"}, "user-ca", nil), "invalid configmap"),
+			want: true,
+		},
+		{
+			name: "NotFound client error is retry required",
+			err:  FromClientError(apierrors.NewNotFound(cmGR, "user-ca"), "get configmap %q", "user-ca"),
 			want: false,
 		},
 		{
-			name: "trusted CA bundle error",
-			err:  NewUserTrustedCABundleError(apierrors.NewNotFound(cmGR, "missing"), "trustedCABundle ConfigMap %q not found", "external-secrets/missing"),
+			name: "user configuration error",
+			err:  NewUserConfigurationError(apierrors.NewNotFound(cmGR, "missing"), "trustedCABundle ConfigMap %q not found", "external-secrets/missing"),
+			want: false,
+		},
+		{
+			name: "retry required reconcile error",
+			err:  NewRetryRequiredError(errors.New("conflict"), "update conflict"),
 			want: false,
 		},
 		{name: "nil error", err: nil, want: false},
@@ -228,8 +217,28 @@ func TestFromClientError(t *testing.T) {
 			wantReason: IrrecoverableError,
 		},
 		{
+			name:       "Unauthorized",
+			err:        apierrors.NewUnauthorized("unauthorized"),
+			wantReason: IrrecoverableError,
+		},
+		{
+			name:       "Invalid",
+			err:        apierrors.NewInvalid(schema.GroupKind{Kind: "ConfigMap"}, "user-ca", nil),
+			wantReason: IrrecoverableError,
+		},
+		{
+			name:       "BadRequest",
+			err:        apierrors.NewBadRequest("bad request"),
+			wantReason: IrrecoverableError,
+		},
+		{
 			name:       "ServiceUnavailable",
 			err:        apierrors.NewServiceUnavailable("service unavailable"),
+			wantReason: RetryRequiredError,
+		},
+		{
+			name:       "Conflict",
+			err:        apierrors.NewConflict(cmGR, "user-ca", errors.New("conflict")),
 			wantReason: RetryRequiredError,
 		},
 	}
@@ -250,6 +259,9 @@ func TestFromClientError(t *testing.T) {
 			if got.Reason != tt.wantReason {
 				t.Fatalf("Reason = %q, want %q", got.Reason, tt.wantReason)
 			}
+			if !errors.Is(got, tt.err) {
+				t.Fatalf("expected wrapped error %v, got %v", tt.err, got.Err)
+			}
 		})
 	}
 }
@@ -261,11 +273,22 @@ func TestReconcileErrorConstructorsNil(t *testing.T) {
 		name string
 		got  *ReconcileError
 	}{
-		{name: "NewIrrecoverableError", got: NewIrrecoverableError(nil, "msg")},
-		{name: "NewRetryRequiredError", got: NewRetryRequiredError(nil, "msg")},
-		{name: "NewUserConfigurationError", got: NewUserConfigurationError(nil, "msg")},
-		{name: "NewUserTrustedCABundleError", got: NewUserTrustedCABundleError(nil, "msg")},
-		{name: "FromClientError", got: FromClientError(nil, "msg")},
+		{
+			name: "NewIrrecoverableError",
+			got:  NewIrrecoverableError(nil, "msg"),
+		},
+		{
+			name: "NewRetryRequiredError",
+			got:  NewRetryRequiredError(nil, "msg"),
+		},
+		{
+			name: "NewUserConfigurationError",
+			got:  NewUserConfigurationError(nil, "msg"),
+		},
+		{
+			name: "FromClientError",
+			got:  FromClientError(nil, "msg"),
+		},
 	}
 
 	for _, tt := range tests {

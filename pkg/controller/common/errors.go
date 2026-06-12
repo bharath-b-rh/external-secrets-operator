@@ -27,11 +27,6 @@ const (
 	// The operator sets Degraded. Recovery is driven by watches on the affected resource;
 	// NotFound errors still use periodic requeue until the referenced object exists.
 	UserConfigurationError ErrorReason = "UserConfigurationError"
-
-	// UserTrustedCABundleError indicates user configured trustedCABundle is invalid or incomplete.
-	// The operator sets Degraded. Recovery for existing ConfigMaps is driven by ConfigMap watches;
-	// NotFound errors still use periodic requeue until the ConfigMap is created.
-	UserTrustedCABundleError ErrorReason = "UserTrustedCABundleError"
 )
 
 // ReconcileError represents an error that occurred during reconciliation.
@@ -88,18 +83,6 @@ func NewUserConfigurationError(err error, message string, args ...any) *Reconcil
 	}
 }
 
-// NewUserTrustedCABundleError creates a ReconcileError for user trustedCABundle misconfiguration.
-func NewUserTrustedCABundleError(err error, message string, args ...any) *ReconcileError {
-	if err == nil {
-		return nil
-	}
-	return &ReconcileError{
-		Reason:  UserTrustedCABundleError,
-		Message: fmt.Sprintf(message, args...),
-		Err:     err,
-	}
-}
-
 // IsIrrecoverableError checks if the given error is a ReconcileError
 // with IrrecoverableError reason. Returns false if err is nil or
 // not a ReconcileError.
@@ -133,24 +116,6 @@ func IsUserConfigurationError(err error) bool {
 func IsUserConfigurationNotFound(err error) bool {
 	rerr := &ReconcileError{}
 	if !errors.As(err, &rerr) || rerr.Reason != UserConfigurationError {
-		return false
-	}
-	return apierrors.IsNotFound(rerr.Err)
-}
-
-// IsUserTrustedCABundleError checks if the given error is a ReconcileError with UserTrustedCABundleError reason.
-func IsUserTrustedCABundleError(err error) bool {
-	rerr := &ReconcileError{}
-	if errors.As(err, &rerr) {
-		return rerr.Reason == UserTrustedCABundleError
-	}
-	return false
-}
-
-// IsUserTrustedCABundleNotFound reports whether err is a UserTrustedCABundleError caused by a missing ConfigMap.
-func IsUserTrustedCABundleNotFound(err error) bool {
-	rerr := &ReconcileError{}
-	if !errors.As(err, &rerr) || rerr.Reason != UserTrustedCABundleError {
 		return false
 	}
 	return apierrors.IsNotFound(rerr.Err)

@@ -92,9 +92,10 @@ func (r *Reconciler) createOrApplyDeploymentFromAsset(esc *operatorv1alpha1.Exte
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "deployment resource %s updated", deploymentName)
 	case !exist:
-		if err := r.createWithFallback(deployment, resourceMetadata, deploymentName, esc); err != nil {
-			return err
+		if err := r.Create(r.ctx, deployment); err != nil {
+			return common.FromClientError(err, "failed to create %s deployment resource", deploymentName)
 		}
+		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "deployment resource %s created", deploymentName)
 	default:
 		r.log.V(4).Info("deployment resource already exists and is in expected state", "name", deploymentName)
 	}
@@ -129,7 +130,7 @@ func (r *Reconciler) getDeploymentObject(assetName string, esc *operatorv1alpha1
 			wrapped := fmt.Errorf("failed to apply user CA bundle config: %w", err)
 			// When the referenced ConfigMap is missing, the deployment spec is updated to remove
 			// the user CA volume so the operand does not retain a stale mount reference.
-			if common.IsUserTrustedCABundleNotFound(err) {
+			if common.IsUserConfigurationNotFound(err) {
 				return deployment, wrapped
 			}
 			return nil, wrapped
@@ -165,7 +166,7 @@ func (r *Reconciler) getDeploymentObject(assetName string, esc *operatorv1alpha1
 	if err := r.applyUserDeploymentConfigs(deployment, esc, assetName); err != nil {
 		return nil, fmt.Errorf("failed to apply user deployment configuration: %w", err)
 	}
-	r.updateProxyConfiguration(deployment, esc)
+	r.updateProxyConfiguration(deployment)
 
 	return deployment, nil
 }
@@ -232,7 +233,7 @@ func (r *Reconciler) updateResourceRequirement(deployment *appsv1.Deployment, es
 	switch {
 	case esc.Spec.ApplicationConfig.Resources != nil:
 		esc.Spec.ApplicationConfig.Resources.DeepCopyInto(&rscReqs)
-	case r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Resources != nil:
+	case r.esm != nil && r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Resources != nil:
 		r.esm.Spec.GlobalConfig.Resources.DeepCopyInto(&rscReqs)
 	default:
 		return nil
@@ -264,7 +265,7 @@ func (r *Reconciler) updateNodeSelector(deployment *appsv1.Deployment, esc *oper
 
 	if esc.Spec.ApplicationConfig.NodeSelector != nil {
 		nodeSelector = esc.Spec.ApplicationConfig.NodeSelector
-	} else if r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.NodeSelector != nil {
+	} else if r.esm != nil && r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.NodeSelector != nil {
 		nodeSelector = r.esm.Spec.GlobalConfig.NodeSelector
 	}
 
@@ -286,7 +287,7 @@ func (r *Reconciler) updateAffinityRules(deployment *appsv1.Deployment, esc *ope
 
 	if esc.Spec.ApplicationConfig.Affinity != nil {
 		affinity = esc.Spec.ApplicationConfig.Affinity
-	} else if r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Affinity != nil {
+	} else if r.esm != nil && r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Affinity != nil {
 		affinity = r.esm.Spec.GlobalConfig.Affinity
 	}
 
@@ -308,7 +309,7 @@ func (r *Reconciler) updatePodTolerations(deployment *appsv1.Deployment, esc *op
 
 	if esc.Spec.ApplicationConfig.Tolerations != nil {
 		tolerations = esc.Spec.ApplicationConfig.Tolerations
-	} else if r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Tolerations != nil {
+	} else if r.esm != nil && r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Tolerations != nil {
 		tolerations = r.esm.Spec.GlobalConfig.Tolerations
 	}
 
@@ -495,15 +496,15 @@ func updateSecretVolumeConfig(deployment *appsv1.Deployment, volumeName, secretN
 
 // updateProxyConfiguration applies or removes all proxy-related deployment configuration
 // (environment variables and trusted CA bundle volume/mounts) based on proxy configuration.
-func (r *Reconciler) updateProxyConfiguration(deployment *appsv1.Deployment, esc *operatorv1alpha1.ExternalSecretsConfig) {
-	if r.isProxyEnabled() {
-		proxyConfig, _ := r.getProxyConfiguration(esc)
-		applyProxyEnvironmentVariables(deployment, proxyConfig)
-		applyTrustedCABundleVolumes(deployment)
+func (r *Reconciler) updateProxyConfiguration(deployment *appsv1.Deployment) {
+	if !r.isProxyEnabled() {
+		removeProxyEnvironmentVariables(deployment)
+		removeTrustedCABundleVolumes(deployment)
 		return
 	}
-	removeProxyEnvironmentVariables(deployment)
-	removeTrustedCABundleVolumes(deployment)
+
+	applyProxyEnvironmentVariables(deployment, r.proxyConfig)
+	applyTrustedCABundleVolumes(deployment)
 }
 
 // applyProxyEnvironmentVariables sets proxy environment variables on all containers and init containers.
@@ -717,7 +718,7 @@ func (r *Reconciler) applyUserCABundleConfig(deployment *appsv1.Deployment, esc 
 	if err := r.getWithCacheFallback(namespacedName, cm); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.removeUserCABundleConfig(deployment)
-			return common.NewUserTrustedCABundleError(err, "trustedCABundle ConfigMap %q not found", namespacedName)
+			return common.NewUserConfigurationError(err, "trustedCABundle ConfigMap %q not found", namespacedName)
 		}
 		return common.FromClientError(err, "failed to fetch trustedCABundle ConfigMap %q", namespacedName)
 	}
@@ -749,7 +750,7 @@ func (r *Reconciler) applyUserCABundleConfig(deployment *appsv1.Deployment, esc 
 	}
 	data, ok := cm.Data[key]
 	if !ok {
-		return common.NewUserTrustedCABundleError(
+		return common.NewUserConfigurationError(
 			fmt.Errorf("key %q not found", key),
 			"trustedCABundle ConfigMap %q does not contain key %q",
 			namespacedName, key,
@@ -757,7 +758,7 @@ func (r *Reconciler) applyUserCABundleConfig(deployment *appsv1.Deployment, esc 
 	}
 
 	if err := r.validateTrustedCABundleData(esc, namespacedName, key, data); err != nil {
-		return common.NewUserTrustedCABundleError(err, "trustedCABundle ConfigMap %q key %q has invalid PEM", namespacedName, key)
+		return common.NewUserConfigurationError(err, "trustedCABundle ConfigMap %q key %q has invalid PEM", namespacedName, key)
 	}
 
 	// Add or replace the user CA bundle volume and mount it on the core controller container only.

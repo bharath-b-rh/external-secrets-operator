@@ -103,13 +103,18 @@ var _ = Describe("Trusted CA Bundle", Ordered, func() {
 	BeforeAll(func() {
 		ctx = context.Background()
 
-		esc = &operatorv1alpha1.ExternalSecretsConfig{}
-		Expect(suiteRuntimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc)).To(Succeed())
-
-		By("Waiting for operator and operand pods to be ready before trusted CA bundle tests")
+		By("Waiting for operator pod to be ready")
 		Expect(utils.VerifyPodsReadyByPrefix(ctx, suiteClientset, operatorNamespace, []string{
 			operatorPodPrefix,
 		})).To(Succeed())
+
+		By("Ensuring ExternalSecretsConfig cluster CR exists and is Ready")
+		Expect(ensureExternalSecretsConfigReady(ctx)).To(Succeed())
+
+		esc = &operatorv1alpha1.ExternalSecretsConfig{}
+		Expect(suiteRuntimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc)).To(Succeed())
+
+		By("Waiting for operand pods to be ready before trusted CA bundle tests")
 		Expect(utils.VerifyOperandPodsReady(ctx, suiteClientset, operandNamespace, esc)).To(Succeed())
 	})
 

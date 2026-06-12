@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
+	"github.com/openshift/external-secrets-operator/pkg/controller/common"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,9 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
 	"github.com/openshift/external-secrets-operator/pkg/controller/client/fakes"
-	"github.com/openshift/external-secrets-operator/pkg/controller/common"
 	"github.com/openshift/external-secrets-operator/pkg/controller/commontest"
 )
 
@@ -69,6 +69,30 @@ func TestHasManagedOrWatchLabel(t *testing.T) {
 	}
 }
 
+func TestBuildCacheObjectList_ConfigMapNamespaceScope(t *testing.T) {
+	t.Parallel()
+
+	objectList := buildCacheObjectList(false)
+	var byObject cache.ByObject
+	var found bool
+	for obj, cfg := range objectList {
+		if _, ok := obj.(*corev1.ConfigMap); ok {
+			byObject = cfg
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("ConfigMap not in cache object list")
+	}
+	if _, ok := byObject.Namespaces[OperandDefaultNamespace]; !ok {
+		t.Fatalf("expected ConfigMap cache scoped to %q, got namespaces %v", OperandDefaultNamespace, byObject.Namespaces)
+	}
+	if byObject.Label != nil {
+		t.Fatalf("expected no label selector on namespace-scoped ConfigMap cache, got %v", byObject.Label)
+	}
+}
+
 func TestDeploymentFailureConditions(t *testing.T) {
 	t.Parallel()
 
@@ -93,7 +117,20 @@ func TestDeploymentFailureConditions(t *testing.T) {
 			wantReadyContains:    "irrecoverable error",
 		},
 		{
-			name: "user configuration error",
+			name: "trusted CA bundle error",
+			reconcileErr: common.NewUserConfigurationError(
+				errors.New("invalid pem"),
+				"trustedCABundle ConfigMap %q key %q has invalid PEM",
+				"external-secrets/user-ca", "ca-bundle.crt",
+			),
+			wantDegradedStatus:   metav1.ConditionTrue,
+			wantReadyStatus:      metav1.ConditionFalse,
+			wantReadyReason:      operatorv1alpha1.ReasonFailed,
+			wantDegradedContains: "user configuration is invalid",
+			wantReadyContains:    "user configuration is invalid",
+		},
+		{
+			name: "proxy configuration error",
 			reconcileErr: common.NewUserConfigurationError(
 				errors.New("invalid proxy URL configured"),
 				"externalsecretsconfigs.operator.openshift.io/cluster proxy configuration validation failed",
@@ -117,13 +154,7 @@ func TestDeploymentFailureConditions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			degraded, ready := deploymentFailureConditions(
-				observedGeneration,
-				tt.reconcileErr,
-				common.IsIrrecoverableError(tt.reconcileErr),
-				common.IsUserConfigurationError(tt.reconcileErr),
-				common.IsUserTrustedCABundleError(tt.reconcileErr),
-			)
+			degraded, ready := deploymentFailureConditions(observedGeneration, tt.reconcileErr)
 
 			if degraded.ObservedGeneration != observedGeneration {
 				t.Fatalf("degraded ObservedGeneration = %d, want %d", degraded.ObservedGeneration, observedGeneration)
@@ -156,10 +187,15 @@ func TestUserConfigurationFailureResult(t *testing.T) {
 	cmGR := schema.GroupResource{Resource: "configmaps"}
 	notFoundErr := common.NewUserConfigurationError(
 		apierrors.NewNotFound(cmGR, "user-ca"),
-		"bitwarden TLS secret %q not found",
+		"trustedCABundle ConfigMap %q not found",
 		"external-secrets/user-ca",
 	)
 	invalidErr := common.NewUserConfigurationError(
+		errors.New("invalid pem"),
+		"trustedCABundle ConfigMap %q key %q has invalid PEM",
+		"external-secrets/user-ca", "ca-bundle.crt",
+	)
+	proxyErr := common.NewUserConfigurationError(
 		errors.New("invalid proxy URL configured"),
 		"proxy configuration validation failed",
 	)
@@ -177,8 +213,12 @@ func TestUserConfigurationFailureResult(t *testing.T) {
 			wantRequeue:  common.DefaultRequeueTime,
 		},
 		{
-			name:         "invalid config waits for CR update",
+			name:         "invalid PEM waits for ConfigMap watch",
 			reconcileErr: invalidErr,
+		},
+		{
+			name:         "invalid proxy waits for CR update",
+			reconcileErr: proxyErr,
 		},
 		{
 			name:            "status update error is returned",
@@ -214,30 +254,19 @@ func TestReconcileDeploymentFailureResult(t *testing.T) {
 
 	cmGR := schema.GroupResource{Resource: "configmaps"}
 	notFoundErr := fmt.Errorf("failed to apply user CA bundle config: %w",
-		common.NewUserTrustedCABundleError(
+		common.NewUserConfigurationError(
 			apierrors.NewNotFound(cmGR, "user-ca"),
 			"trustedCABundle ConfigMap %q not found",
 			"external-secrets/user-ca",
 		),
 	)
 	irrecoverableErr := common.NewIrrecoverableError(errors.New("forbidden"), "permission denied")
-	statusUpdateErr := errors.New("status update failed")
 	retryErr := common.NewRetryRequiredError(errors.New("timeout"), "temporary failure")
 	proxyErr := common.NewUserConfigurationError(errors.New("invalid proxy URL configured"), "proxy configuration validation failed")
-	issuerNotFoundErr := common.NewUserConfigurationError(
-		apierrors.NewNotFound(schema.GroupResource{Group: "cert-manager.io", Resource: "issuers"}, testIssuerName),
-		"issuer %q of kind %q not found in %s",
-		testIssuerName, issuerKind, commontest.TestExternalSecretsNamespace,
-	)
-	bitwardenConfigErr := common.NewUserConfigurationError(
-		fmt.Errorf("invalid bitwardenSecretManagerProvider config"),
-		"either secretRef or certManagerConfig must be configured when bitwardenSecretManagerProvider is enabled",
-	)
 
 	tests := []struct {
 		name            string
 		reconcileErr    error
-		statusUpdateErr error
 		wantRequeue     time.Duration
 		wantReturnError error
 	}{
@@ -247,27 +276,13 @@ func TestReconcileDeploymentFailureResult(t *testing.T) {
 			wantRequeue:  common.DefaultRequeueTime,
 		},
 		{
-			name:         "irrecoverable error does not requeue",
-			reconcileErr: irrecoverableErr,
-		},
-		{
-			name:            "irrecoverable error returns status update failure",
+			name:            "irrecoverable error does not requeue",
 			reconcileErr:    irrecoverableErr,
-			statusUpdateErr: statusUpdateErr,
-			wantReturnError: statusUpdateErr,
+			wantReturnError: irrecoverableErr,
 		},
 		{
 			name:         "proxy configuration error waits for CR update",
 			reconcileErr: proxyErr,
-		},
-		{
-			name:         "issuer NotFound requeues",
-			reconcileErr: issuerNotFoundErr,
-			wantRequeue:  common.DefaultRequeueTime,
-		},
-		{
-			name:         "bitwarden incomplete config waits for CR update",
-			reconcileErr: bitwardenConfigErr,
 		},
 		{
 			name:         "retry required error requeues",
@@ -288,7 +303,7 @@ func TestReconcileDeploymentFailureResult(t *testing.T) {
 				return nil
 			})
 			mock.StatusUpdateCalls(func(_ context.Context, _ client.Object, _ ...client.SubResourceUpdateOption) error {
-				return tt.statusUpdateErr
+				return nil
 			})
 			r.CtrlClient = mock
 
@@ -299,10 +314,7 @@ func TestReconcileDeploymentFailureResult(t *testing.T) {
 				1,
 			)
 			if tt.wantReturnError != nil {
-				if err == nil {
-					t.Fatalf("reconcileDeploymentFailureResult() err = nil, want %v", tt.wantReturnError)
-				}
-				if err.Error() != tt.wantReturnError.Error() && !strings.Contains(err.Error(), tt.wantReturnError.Error()) {
+				if err == nil || err.Error() != tt.wantReturnError.Error() {
 					t.Fatalf("reconcileDeploymentFailureResult() err = %v, want %v", err, tt.wantReturnError)
 				}
 			} else if err != nil {
@@ -312,37 +324,5 @@ func TestReconcileDeploymentFailureResult(t *testing.T) {
 				t.Fatalf("RequeueAfter = %v, want %v", result.RequeueAfter, tt.wantRequeue)
 			}
 		})
-	}
-}
-
-func TestBuildCacheObjectList_ConfigMapNamespaceScope(t *testing.T) {
-	t.Parallel()
-
-	objectList := buildCacheObjectList(false)
-	var byObject cache.ByObject
-	var found bool
-	for obj, cfg := range objectList {
-		if _, ok := obj.(*corev1.ConfigMap); ok {
-			byObject = cfg
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("ConfigMap not in cache object list")
-	}
-	if _, ok := byObject.Namespaces[OperandDefaultNamespace]; !ok {
-		t.Fatalf("expected ConfigMap cache scoped to %q, got namespaces %v", OperandDefaultNamespace, byObject.Namespaces)
-	}
-	if byObject.Label != nil {
-		t.Fatalf("expected no label selector on namespace-scoped ConfigMap cache, got %v", byObject.Label)
-	}
-}
-
-// Ensure commontest namespace matches operand namespace used by getNamespace.
-func TestOperandNamespaceMatchesCommontest(t *testing.T) {
-	t.Parallel()
-	if OperandDefaultNamespace != commontest.TestExternalSecretsNamespace {
-		t.Fatalf("OperandDefaultNamespace %q != commontest %q", OperandDefaultNamespace, commontest.TestExternalSecretsNamespace)
 	}
 }

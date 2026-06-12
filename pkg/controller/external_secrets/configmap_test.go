@@ -232,7 +232,11 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 			} else {
 				esc = testESCWithProxy()
 			}
-			r.setProxyStatus(esc)
+			if proxyConfig, err := r.resolveProxyConfiguration(esc); err != nil {
+				t.Fatalf("resolveProxyConfiguration() error = %v", err)
+			} else {
+				r.proxyConfig = proxyConfig
+			}
 
 			err := r.ensureTrustedCABundleConfigMap(esc, tt.resourceMetadata)
 

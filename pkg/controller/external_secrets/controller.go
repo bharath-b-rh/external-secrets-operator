@@ -88,7 +88,7 @@ type Reconciler struct {
 	log                   logr.Logger
 	esm                   *operatorv1alpha1.ExternalSecretsManager
 	optionalResourcesList map[string]struct{}
-	proxyEnabled          bool
+	proxyConfig           *operatorv1alpha1.ProxyConfig
 	now                   *common.Now
 }
 
@@ -272,31 +272,26 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.log.V(4).Info("received reconcile event", "object", fmt.Sprintf("%T", obj), "name", obj.GetName(), "namespace", obj.GetNamespace())
 
 		objLabels := obj.GetLabels()
-		if _, isConfigMap := obj.(*corev1.ConfigMap); isConfigMap {
-			if objLabels == nil || !hasManagedOrWatchLabel(objLabels) {
-				r.log.V(4).Info("ConfigMap not of interest, ignoring reconcile event", "object", fmt.Sprintf("%T", obj), "name", obj.GetName(), "namespace", obj.GetNamespace())
-				return []reconcile.Request{}
+		if objLabels != nil && hasManagedOrWatchLabel(objLabels) {
+			return []reconcile.Request{
+				{
+					NamespacedName: types.NamespacedName{
+						Name: common.ExternalSecretsConfigObjectName,
+					},
+				},
 			}
 		}
 
-		return []reconcile.Request{
-			{
-				NamespacedName: types.NamespacedName{
-					Name: common.ExternalSecretsConfigObjectName,
-				},
-			},
-		}
-	}
-
-	isManagedResource := func(object client.Object) bool {
-		labels := object.GetLabels()
-		matches := labels != nil && labels[ManagedResourceLabelKey] == ManagedResourceLabelValue
-		r.log.V(4).Info("predicate evaluation", "object", fmt.Sprintf("%T", object), "name", object.GetName(), "namespace", object.GetNamespace(), "labels", labels, "matches", matches)
-		return matches
+		r.log.V(4).Info("object not of interest, ignoring reconcile event", "object", fmt.Sprintf("%T", obj), "name", obj.GetName(), "namespace", obj.GetNamespace())
+		return []reconcile.Request{}
 	}
 
 	// On updates, check both old and new objects so that events where the managed
 	// label is removed externally still trigger reconciliation and label restoration.
+	isManagedResource := func(object client.Object) bool {
+		labels := object.GetLabels()
+		return labels != nil && labels[ManagedResourceLabelKey] == ManagedResourceLabelValue
+	}
 	managedResources := predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
 			return isManagedResource(e.Object)
@@ -322,6 +317,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return hasManagedOrWatchLabel(object.GetLabels())
 	})
 
+	// Resources like Deployments are reconciled on spec generation or managed-label changes.
 	withIgnoreStatusUpdatePredicates := builder.WithPredicates(
 		predicate.Or(predicate.GenerationChangedPredicate{}, predicate.LabelChangedPredicate{}),
 		managedResources,
@@ -447,6 +443,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			// NotFound errors, since they can't be fixed by an immediate
 			// requeue (have to wait for a new notification).
 			r.log.V(1).Info("externalsecretsmanagers.operator.openshift.io object not found, continuing without it")
+			r.esm = &operatorv1alpha1.ExternalSecretsManager{}
 		} else {
 			return ctrl.Result{}, fmt.Errorf("failed to fetch externalsecretsmanagers.operator.openshift.io %q during reconciliation: %w", esmNamespacedName, err)
 		}
@@ -463,7 +460,6 @@ func (r *Reconciler) processReconcileRequest(esc *operatorv1alpha1.ExternalSecre
 	}
 
 	observedGeneration := esc.GetGeneration()
-	r.setProxyStatus(esc)
 	err := r.reconcileExternalSecretsDeployment(esc, createRecon)
 	if err != nil {
 		return r.reconcileDeploymentFailureResult(esc, req, err, observedGeneration)
@@ -482,20 +478,19 @@ func (r *Reconciler) reconcileDeploymentFailureResult(
 
 	isFatal := common.IsIrrecoverableError(reconcileErr)
 	isUserConfig := common.IsUserConfigurationError(reconcileErr)
-	isTrustedCABundle := common.IsUserTrustedCABundleError(reconcileErr)
 
-	degradedCond, readyCond := deploymentFailureConditions(observedGeneration, reconcileErr, isFatal, isUserConfig, isTrustedCABundle)
+	degradedCond, readyCond := deploymentFailureConditions(observedGeneration, reconcileErr)
 
 	errUpdate := r.updateStatusConditionsOnFailure(esc, degradedCond, readyCond, isFatal, reconcileErr)
 
 	if isFatal {
-		return ctrl.Result{}, errUpdate
+		if errUpdate != nil {
+			return ctrl.Result{}, errUpdate
+		}
+		return ctrl.Result{}, reconcileErr
 	}
 	if isUserConfig {
 		return userConfigurationFailureResult(reconcileErr, errUpdate)
-	}
-	if isTrustedCABundle {
-		return trustedCABundleFailureResult(reconcileErr, errUpdate)
 	}
 	if errUpdate != nil {
 		return ctrl.Result{}, errUpdate
@@ -506,8 +501,10 @@ func (r *Reconciler) reconcileDeploymentFailureResult(
 func deploymentFailureConditions(
 	observedGeneration int64,
 	reconcileErr error,
-	isFatal, isUserConfig, isTrustedCABundle bool,
 ) (degradedCond, readyCond metav1.Condition) {
+	isFatal := common.IsIrrecoverableError(reconcileErr)
+	isUserConfig := common.IsUserConfigurationError(reconcileErr)
+
 	degradedCond = metav1.Condition{
 		Type:               operatorv1alpha1.Degraded,
 		ObservedGeneration: observedGeneration,
@@ -517,7 +514,7 @@ func deploymentFailureConditions(
 		ObservedGeneration: observedGeneration,
 	}
 
-	if isFatal || isUserConfig || isTrustedCABundle {
+	if isFatal || isUserConfig {
 		degradedCond.Status = metav1.ConditionTrue
 		degradedCond.Reason = operatorv1alpha1.ReasonFailed
 		switch {
@@ -525,8 +522,6 @@ func deploymentFailureConditions(
 			degradedCond.Message = fmt.Sprintf("reconciliation failed with irrecoverable error, not retrying: %v", reconcileErr)
 		case isUserConfig:
 			degradedCond.Message = fmt.Sprintf("user configuration is invalid: %v", reconcileErr)
-		case isTrustedCABundle:
-			degradedCond.Message = fmt.Sprintf("trustedCABundle configuration is invalid: %v", reconcileErr)
 		}
 		readyCond.Status = metav1.ConditionFalse
 		readyCond.Reason = operatorv1alpha1.ReasonFailed
@@ -547,20 +542,8 @@ func userConfigurationFailureResult(reconcileErr error, errUpdate error) (ctrl.R
 		return ctrl.Result{}, errUpdate
 	}
 	// Existing referenced objects are watched via resourceVersion; wait for user fixes instead of polling.
-	// NotFound still requeues because watch events are not received for unmanaged objects until reconciled once.
+	// NotFound still requeues because the watch events are not received for unmanaged objects it's reconciled once.
 	if common.IsUserConfigurationNotFound(reconcileErr) {
-		return ctrl.Result{RequeueAfter: common.DefaultRequeueTime}, nil
-	}
-	return ctrl.Result{}, nil
-}
-
-func trustedCABundleFailureResult(reconcileErr error, errUpdate error) (ctrl.Result, error) {
-	if errUpdate != nil {
-		return ctrl.Result{}, errUpdate
-	}
-	// Existing ConfigMaps are watched via resourceVersion; wait for data fixes instead of polling.
-	// NotFound still requeues because the ConfigMap cannot emit watch events until it exists.
-	if common.IsUserTrustedCABundleNotFound(reconcileErr) {
 		return ctrl.Result{RequeueAfter: common.DefaultRequeueTime}, nil
 	}
 	return ctrl.Result{}, nil

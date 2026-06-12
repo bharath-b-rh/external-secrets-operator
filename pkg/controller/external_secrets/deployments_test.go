@@ -1240,6 +1240,80 @@ func TestUpdateProxyConfiguration(t *testing.T) {
 			},
 		},
 		{
+			name: "Proxy with only networkPolicyProvisioning Unmanaged keeps OLM proxy env",
+			deployment: &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name: "external-secrets",
+									Env: []corev1.EnvVar{
+										{Name: "HTTP_PROXY", Value: "http://old-proxy:8080"},
+										{Name: "HTTPS_PROXY", Value: "https://old-proxy:8443"},
+										{Name: "NO_PROXY", Value: "old.local"},
+										{Name: "http_proxy", Value: "http://old-proxy:8080"},
+										{Name: "https_proxy", Value: "https://old-proxy:8443"},
+										{Name: "no_proxy", Value: "old.local"},
+										{Name: "KEEP_THIS_VAR", Value: "keep-value"},
+									},
+									VolumeMounts: []corev1.VolumeMount{
+										{Name: "trusted-ca-bundle", MountPath: "/etc/pki/tls/certs", ReadOnly: true},
+									},
+								},
+							},
+							Volumes: []corev1.Volume{
+								{
+									Name: "trusted-ca-bundle",
+									VolumeSource: corev1.VolumeSource{
+										ConfigMap: &corev1.ConfigMapVolumeSource{
+											LocalObjectReference: corev1.LocalObjectReference{
+												Name: ProxyTrustedCABundleConfigMapName,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			externalSecretsConfig: &v1alpha1.ExternalSecretsConfig{
+				Spec: v1alpha1.ExternalSecretsConfigSpec{
+					ApplicationConfig: v1alpha1.ApplicationConfig{
+						CommonConfigs: v1alpha1.CommonConfigs{
+							Proxy: &v1alpha1.ProxyConfig{
+								NetworkPolicyProvisioning: v1alpha1.ManagementStateUnmanaged,
+							},
+						},
+					},
+				},
+			},
+			externalSecretsManager: &v1alpha1.ExternalSecretsManager{},
+			olmEnvVars: map[string]string{
+				httpProxyEnvVar:  "http://olm-proxy:8080",
+				httpsProxyEnvVar: "https://olm-proxy:8443",
+				noProxyEnvVar:    "olm.local",
+			},
+			expectedContainerEnvVars: map[string][]corev1.EnvVar{
+				"external-secrets": {
+					{Name: "HTTP_PROXY", Value: "http://olm-proxy:8080"},
+					{Name: "HTTPS_PROXY", Value: "https://olm-proxy:8443"},
+					{Name: "NO_PROXY", Value: "olm.local"},
+					{Name: "http_proxy", Value: "http://olm-proxy:8080"},
+					{Name: "https_proxy", Value: "https://olm-proxy:8443"},
+					{Name: "no_proxy", Value: "olm.local"},
+					{Name: "KEEP_THIS_VAR", Value: "keep-value"},
+				},
+			},
+			expectedVolumes: []corev1.Volume{expectedTrustedCAVolume},
+			expectedVolumeMounts: map[string][]corev1.VolumeMount{
+				"external-secrets": {
+					{Name: "trusted-ca-bundle", MountPath: "/etc/pki/tls/certs", ReadOnly: true},
+				},
+			},
+		},
+		{
 			name: "Proxy configuration removal cleans up environment variables and volumes",
 			deployment: &appsv1.Deployment{
 				Spec: appsv1.DeploymentSpec{
@@ -1348,9 +1422,11 @@ func TestUpdateProxyConfiguration(t *testing.T) {
 			r := &Reconciler{
 				esm: tt.externalSecretsManager,
 			}
-			r.setProxyStatus(tt.externalSecretsConfig)
+			if err := r.validateExternalSecretsConfig(tt.externalSecretsConfig); err != nil {
+				t.Fatalf("validateExternalSecretsConfig() error = %v", err)
+			}
 
-			r.updateProxyConfiguration(tt.deployment, tt.externalSecretsConfig)
+			r.updateProxyConfiguration(tt.deployment)
 
 			validateEnvironmentVariables(t, tt.deployment, tt.expectedContainerEnvVars)
 			validateVolumes(t, tt.deployment, tt.expectedVolumes)
@@ -2069,7 +2145,7 @@ func TestApplyUserCABundleConfig(t *testing.T) {
 		cm           *corev1.ConfigMap
 		cmNotFound   bool
 		deployment   *appsv1.Deployment
-		proxyEnabled bool
+		proxyConfig  *v1alpha1.ProxyConfig
 		wantErr      bool
 		wantTrusted  bool
 		assertEvents func(t *testing.T, r *Reconciler)
@@ -2201,11 +2277,11 @@ func TestApplyUserCABundleConfig(t *testing.T) {
 			},
 		},
 		{
-			name:         "skips mount when CNO label and proxy enabled",
-			esc:          baseESC,
-			cm:           testUserCAConfigMap(cmName, validPEM, map[string]string{TrustedCABundleInjectLabel: "true"}),
-			deployment:   baseDeployment(),
-			proxyEnabled: true,
+			name:        "skips mount when CNO label and proxy enabled",
+			esc:         baseESC,
+			cm:          testUserCAConfigMap(cmName, validPEM, map[string]string{TrustedCABundleInjectLabel: "true"}),
+			deployment:  baseDeployment(),
+			proxyConfig: &v1alpha1.ProxyConfig{HTTPProxy: "http://proxy:8080"},
 			assertDeploy: func(t *testing.T, deployment *appsv1.Deployment) {
 				t.Helper()
 				for _, vol := range deployment.Spec.Template.Spec.Volumes {
@@ -2295,14 +2371,14 @@ func TestApplyUserCABundleConfig(t *testing.T) {
 				UncachedClient: uncached,
 				eventRecorder:  record.NewFakeRecorder(10),
 				now:            &common.Now{},
-				proxyEnabled:   tt.proxyEnabled,
+				proxyConfig:    tt.proxyConfig,
 			}
 
 			err := r.applyUserCABundleConfig(tt.deployment, tt.esc)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("applyUserCABundleConfig() error = %v, wantErr %v", err, tt.wantErr)
 			}
-			if tt.wantTrusted && err != nil && !common.IsUserTrustedCABundleError(err) {
+			if tt.wantTrusted && err != nil && !common.IsUserConfigurationError(err) {
 				t.Fatalf("expected TrustedCABundleError, got %v", err)
 			}
 			if tt.assertDeploy != nil {

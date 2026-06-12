@@ -133,18 +133,8 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			operatorPodPrefix,
 		})).To(Succeed())
 
-		esc := &operatorv1alpha1.ExternalSecretsConfig{}
-		if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc); err != nil {
-			if k8serrors.IsNotFound(err) {
-				By("Creating the externalsecrets.openshift.operator.io/cluster CR")
-				loader.CreateFromFile(testassets.ReadFile, externalSecretsFile, "")
-			} else {
-				Expect(err).NotTo(HaveOccurred(), "failed to get cluster ExternalSecretsConfig")
-			}
-		}
-
-		By("Waiting for ExternalSecretsConfig to be Ready (with Degraded=False)")
-		Expect(utils.WaitForExternalSecretsConfigReady(ctx, dynamicClient, common.ExternalSecretsConfigObjectName, 2*time.Minute)).To(Succeed(),
+		By("Ensuring ExternalSecretsConfig cluster CR exists and is Ready")
+		Expect(ensureExternalSecretsConfigReady(ctx)).To(Succeed(),
 			"ExternalSecretsConfig should have Ready=True and Degraded=False conditions")
 	})
 
@@ -935,7 +925,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 				By("Verifying the cleanup annotation is present on the CR")
 				Eventually(func(g Gomega) {
 					esc := &operatorv1alpha1.ExternalSecretsConfig{}
-					g.Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esc)).To(Succeed())
+					g.Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc)).To(Succeed())
 
 					annotations := esc.GetAnnotations()
 					g.Expect(annotations).To(HaveKeyWithValue(
@@ -960,7 +950,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 		It("should prepend eso-user- prefix to custom network policies from CR spec", func() {
 			By("Verifying the ExternalSecretsConfig has custom network policies configured")
 			esc := &operatorv1alpha1.ExternalSecretsConfig{}
-			Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esc)).To(Succeed())
+			Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc)).To(Succeed())
 
 			if len(esc.Spec.ControllerConfig.NetworkPolicies) == 0 {
 				Skip("No custom network policies configured in ExternalSecretsConfig")
@@ -995,7 +985,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			port8443 := intstr.FromInt32(8443)
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 					return err
 				}
 
@@ -1037,15 +1027,23 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 	// OpenShift egress proxy is already configured via proxy.config.openshift.io/cluster object
 	Context("Proxy Egress Network Policy", Label("Platform:Generic"), Label("Proxy:HTTP"), func() {
 		var clusterProxyPorts []int32
+		var originalProxy *operatorv1alpha1.ProxyConfig
 
 		BeforeAll(func() {
+			By("Capturing original proxy configuration from ExternalSecretsConfig")
+			esc := &operatorv1alpha1.ExternalSecretsConfig{}
+			Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc)).To(Succeed())
+			if esc.Spec.ApplicationConfig.Proxy != nil {
+				originalProxy = esc.Spec.ApplicationConfig.Proxy.DeepCopy()
+			}
+
 			By("Checking cluster-wide proxy configuration exists")
 			proxyGVR := schema.GroupVersionResource{
 				Group:    "config.openshift.io",
 				Version:  "v1",
 				Resource: "proxies",
 			}
-			proxyCR, err := dynamicClient.Resource(proxyGVR).Get(ctx, "cluster", metav1.GetOptions{})
+			proxyCR, err := dynamicClient.Resource(proxyGVR).Get(ctx, common.ExternalSecretsConfigObjectName, metav1.GetOptions{})
 			Expect(err).NotTo(HaveOccurred(), "should be able to read proxies.config.openshift.io/cluster CR")
 
 			proxyStatus, _, _ := unstructured.NestedMap(proxyCR.Object, "status")
@@ -1060,16 +1058,16 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 		})
 
 		AfterEach(func() {
-			By("Clearing proxy configuration from CR")
+			By("Restoring original proxy configuration on ExternalSecretsConfig")
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 					return err
 				}
-				currentCR.Spec.ApplicationConfig.Proxy = nil
+				currentCR.Spec.ApplicationConfig.Proxy = originalProxy
 				return runtimeClient.Update(ctx, currentCR)
 			})
-			Expect(err).NotTo(HaveOccurred(), "should clear proxy config")
+			Expect(err).NotTo(HaveOccurred(), "should restore original proxy config")
 		})
 
 		// Cluster-wide proxy configuration consumed via OLM env vars.
@@ -1077,7 +1075,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			By("Setting proxy configuration with Managed network policy provisioning")
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 					return err
 				}
 				currentCR.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
@@ -1107,7 +1105,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			By("Setting proxy configuration with Managed provisioning first")
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 					return err
 				}
 				currentCR.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
@@ -1126,7 +1124,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			By("Switching to Unmanaged provisioning")
 			err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 					return err
 				}
 				currentCR.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
@@ -1139,7 +1137,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			By("Waiting for proxy egress policy to be removed")
 			Eventually(func(g Gomega) {
 				_, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npProxyEgressPolicyName, metav1.GetOptions{})
-				g.Expect(err).To(HaveOccurred(), "proxy egress policy should be removed after switching to Unmanaged")
+				g.Expect(k8serrors.IsNotFound(err)).To(BeTrue(), "proxy egress policy should be removed after switching to Unmanaged")
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
@@ -1148,7 +1146,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			By("Setting proxy configuration with Unmanaged network policy provisioning")
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 					return err
 				}
 				currentCR.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
@@ -1160,9 +1158,9 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			Expect(err).NotTo(HaveOccurred(), "should set proxy config with Unmanaged provisioning")
 
 			By("Verifying proxy egress policy is not created")
-			Eventually(func(g Gomega) {
+			Consistently(func(g Gomega) {
 				_, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npProxyEgressPolicyName, metav1.GetOptions{})
-				g.Expect(err).To(HaveOccurred(), "proxy egress policy should not exist when provisioning is Unmanaged")
+				g.Expect(k8serrors.IsNotFound(err)).To(BeTrue(), "proxy egress policy should not exist when provisioning is Unmanaged")
 			}, 30*time.Second, 5*time.Second).Should(Succeed())
 		})
 
@@ -1171,7 +1169,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			By("Setting proxy configuration with Managed network policy provisioning")
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 					return err
 				}
 				currentCR.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{

@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"maps"
+	"net/url"
 	"os"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -82,14 +83,26 @@ func (r *Reconciler) updateStatus(ctx context.Context, changed *operatorv1alpha1
 	return nil
 }
 
-// validateExternalSecretsConfig is for validating the ExternalSecretsConfig CR fields, apart from the
-// CEL validations present in CRD.
+// validateExternalSecretsConfig validates ExternalSecretsConfig CR fields (apart from CEL
+// validations in the CRD).
 func (r *Reconciler) validateExternalSecretsConfig(esc *operatorv1alpha1.ExternalSecretsConfig) error {
+	gvk := esc.GetObjectKind().GroupVersionKind().String()
+	name := esc.GetName()
+
 	if isCertManagerConfigEnabled(esc) {
 		if _, ok := r.optionalResourcesList[certificateCRDGKV]; !ok {
-			return fmt.Errorf("spec.controllerConfig.certProvider.certManager.mode is set, but cert-manager is not installed")
+			return common.NewIrrecoverableError(
+				fmt.Errorf("spec.controllerConfig.certProvider.certManager.mode is set, but cert-manager is not installed"),
+				"%s/%s cert-manager configuration validation failed", gvk, name)
 		}
 	}
+
+	proxyConfig, err := r.resolveProxyConfiguration(esc)
+	if err != nil {
+		return common.NewUserConfigurationError(err, "%s/%s proxy configuration validation failed", gvk, name)
+	}
+	r.proxyConfig = proxyConfig
+
 	return nil
 }
 
@@ -110,7 +123,7 @@ func getLogLevel(esc *operatorv1alpha1.ExternalSecretsConfig, esm *operatorv1alp
 	var logLevel int32 = 1
 	if esc.Spec.ApplicationConfig.LogLevel != 0 {
 		logLevel = esc.Spec.ApplicationConfig.LogLevel
-	} else if esm.Spec.GlobalConfig != nil && esm.Spec.GlobalConfig.LogLevel != 0 {
+	} else if esm != nil && esm.Spec.GlobalConfig != nil && esm.Spec.GlobalConfig.LogLevel != 0 {
 		logLevel = esm.Spec.GlobalConfig.LogLevel
 	}
 	switch logLevel {
@@ -131,68 +144,88 @@ func (r *Reconciler) IsCertManagerInstalled() bool {
 	return ok
 }
 
-// hasProxyURLs reports whether a ProxyConfig carries at least one proxy URL
-// (HTTPProxy, HTTPSProxy, or NoProxy). Control-plane fields like
-// NetworkPolicyProvisioning are intentionally excluded — they configure
-// operator behavior, not proxy endpoints.
-func hasProxyURLs(p *operatorv1alpha1.ProxyConfig) bool {
-	return p != nil && (p.HTTPProxy != "" || p.HTTPSProxy != "" || p.NoProxy != "")
-}
-
-// getProxyConfiguration returns the proxy configuration based on precedence.
-// The precedence order is: ExternalSecretsConfig > ExternalSecretsManager > OLM environment variables.
-// Only proxy URL fields (HTTPProxy, HTTPSProxy, NoProxy) participate in the
-// precedence decision; a ProxyConfig that carries only control-plane fields
-// (e.g. NetworkPolicyProvisioning) is treated as empty and falls through to the
-// next source. After resolving the URLs, any NetworkPolicyProvisioning value set
-// on the ExternalSecretsConfig CR is merged into the result so that administrators
-// can control network-policy management independently of where the proxy URLs originate.
-func (r *Reconciler) getProxyConfiguration(esc *operatorv1alpha1.ExternalSecretsConfig) (*operatorv1alpha1.ProxyConfig, error) {
-	var proxyConfig *operatorv1alpha1.ProxyConfig
-
-	switch {
-	case hasProxyURLs(esc.Spec.ApplicationConfig.Proxy):
-		proxyConfig = esc.Spec.ApplicationConfig.Proxy
-	case r.esm.Spec.GlobalConfig != nil && hasProxyURLs(r.esm.Spec.GlobalConfig.Proxy):
-		proxyConfig = r.esm.Spec.GlobalConfig.Proxy
-	default:
-		// Fall back to OLM environment variables
-		olmHTTPProxy := os.Getenv(httpProxyEnvVar)
-		olmHTTPSProxy := os.Getenv(httpsProxyEnvVar)
-		olmNoProxy := os.Getenv(noProxyEnvVar)
-
-		// Only create proxy config if at least one OLM env var is set
-		if olmHTTPProxy != "" || olmHTTPSProxy != "" || olmNoProxy != "" {
-			proxyConfig = &operatorv1alpha1.ProxyConfig{
-				HTTPProxy:  olmHTTPProxy,
-				HTTPSProxy: olmHTTPSProxy,
-				NoProxy:    olmNoProxy,
-			}
-		}
+// resolveProxyConfiguration returns the proxy configuration by layering sources in precedence
+// order: ExternalSecretsConfig, then ExternalSecretsManager, then OLM environment variables.
+// Each source is applied in full first; any unset fields are filled from the next source.
+func (r *Reconciler) resolveProxyConfiguration(esc *operatorv1alpha1.ExternalSecretsConfig) (*operatorv1alpha1.ProxyConfig, error) {
+	proxyConfig := &operatorv1alpha1.ProxyConfig{}
+	if esc.Spec.ApplicationConfig.Proxy != nil {
+		esc.Spec.ApplicationConfig.Proxy.DeepCopyInto(proxyConfig)
 	}
 
-	// Merge NetworkPolicyProvisioning from the CR even when proxy URLs came
-	// from a lower-priority source, so administrators can control network-policy
-	// management independently.
-	if crProxy := esc.Spec.ApplicationConfig.Proxy; crProxy != nil && proxyConfig != nil {
-		if crProxy.NetworkPolicyProvisioning != "" {
-			proxyConfig.NetworkPolicyProvisioning = crProxy.NetworkPolicyProvisioning
-		}
+	if r.esm != nil && r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Proxy != nil {
+		mergeProxyConfigFields(proxyConfig, r.esm.Spec.GlobalConfig.Proxy)
+	}
+	mergeProxyConfigFields(proxyConfig, olmProxyConfig())
+
+	if !hasEffectiveProxyURLs(proxyConfig) {
+		return nil, nil
 	}
 
-	if proxyConfig != nil {
-		if err := validateProxy(proxyConfig.HTTPProxy); err != nil {
-			return nil, fmt.Errorf("failed to validate HTTP proxy: %w", err)
-		}
-		if err := validateProxy(proxyConfig.HTTPSProxy); err != nil {
-			return nil, fmt.Errorf("failed to validate HTTPS proxy: %w", err)
-		}
+	if err := validateProxy(proxyConfig.HTTPProxy); err != nil {
+		return nil, fmt.Errorf("failed to validate HTTP proxy: %w", err)
+	}
+	if err := validateProxy(proxyConfig.HTTPSProxy); err != nil {
+		return nil, fmt.Errorf("failed to validate HTTPS proxy: %w", err)
 	}
 
 	return proxyConfig, nil
 }
 
-// validateProxy checks if the proxy address configured is a valid URL.
+func olmProxyConfig() *operatorv1alpha1.ProxyConfig {
+	olmHTTPProxy := os.Getenv(httpProxyEnvVar)
+	olmHTTPSProxy := os.Getenv(httpsProxyEnvVar)
+	olmNoProxy := os.Getenv(noProxyEnvVar)
+
+	if olmHTTPProxy == "" && olmHTTPSProxy == "" && olmNoProxy == "" {
+		return nil
+	}
+
+	return &operatorv1alpha1.ProxyConfig{
+		HTTPProxy:  olmHTTPProxy,
+		HTTPSProxy: olmHTTPSProxy,
+		NoProxy:    olmNoProxy,
+	}
+}
+
+func mergeProxyConfigFields(into, from *operatorv1alpha1.ProxyConfig) {
+	if into == nil || from == nil {
+		return
+	}
+	if into.HTTPProxy == "" {
+		into.HTTPProxy = from.HTTPProxy
+	}
+	if into.HTTPSProxy == "" {
+		into.HTTPSProxy = from.HTTPSProxy
+	}
+	if into.NoProxy == "" {
+		into.NoProxy = from.NoProxy
+	}
+	if into.NetworkPolicyProvisioning == "" {
+		into.NetworkPolicyProvisioning = from.NetworkPolicyProvisioning
+	}
+}
+
+// hasEffectiveProxyURLs reports whether any proxy URL fields are set.
+// A non-nil ProxyConfig with only networkPolicyProvisioning does not count as enabled.
+func hasEffectiveProxyURLs(config *operatorv1alpha1.ProxyConfig) bool {
+	if config == nil {
+		return false
+	}
+	return config.HTTPProxy != "" || config.HTTPSProxy != "" || config.NoProxy != ""
+}
+
+// hasProxyEndpointURLs reports whether HTTP or HTTPS proxy URLs are set.
+// NO_PROXY alone does not imply a proxy endpoint for egress NetworkPolicy rules.
+func hasProxyEndpointURLs(config *operatorv1alpha1.ProxyConfig) bool {
+	if config == nil {
+		return false
+	}
+	return config.HTTPProxy != "" || config.HTTPSProxy != ""
+}
+
+// validateProxy checks if the proxy address configured is a valid URL with an explicit
+// port in the valid TCP range when one is specified.
 func validateProxy(rawURL string) error {
 	if rawURL == "" {
 		return nil
@@ -200,104 +233,30 @@ func validateProxy(rawURL string) error {
 
 	parsedURL, err := url.ParseRequestURI(rawURL)
 	if err != nil {
-		return fmt.Errorf("invalid proxy URL configured: %w", err)
+		return fmt.Errorf("invalid proxy URL configured")
 	}
 
+	// the valid schemes could be http, https, socks5 etc., but we will just ensure
+	// scheme and host is not empty.
 	if parsedURL.Scheme == "" || parsedURL.Host == "" {
 		return fmt.Errorf("proxy URL must include valid scheme and host")
 	}
 
+	if portStr := parsedURL.Port(); portStr != "" {
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			return fmt.Errorf("invalid port %q in proxy URL: %w", portStr, err)
+		}
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("port %d out of range in proxy URL", port)
+		}
+	}
+
 	return nil
-}
-
-// createWithFallback attempts to create a resource and handles the AlreadyExists error that
-// occurs when the resource exists on the API server but is invisible to the label-filtered
-// informer cache (e.g. because the managed label app=external-secrets was externally removed).
-//
-// When Create returns AlreadyExists, this method bypasses the stale cache by using the
-// uncached client to update the resource directly on the API server, restoring the managed
-// labels and annotations to the desired state.
-//
-// It records a "created" event on success, or a "restored" event when the AlreadyExists
-// fallback path is taken.
-func (r *Reconciler) createWithFallback(desired client.Object, resourceMetadata common.ResourceMetadata, resourceName string, esc *operatorv1alpha1.ExternalSecretsConfig) error {
-	kind := desired.GetObjectKind().GroupVersionKind().Kind
-	if kind == "" {
-		gvk, gvkErr := apiutil.GVKForObject(desired, r.Scheme)
-		if gvkErr != nil {
-			r.log.V(5).Info("could not determine GVK, falling back to Go type name",
-				"type", fmt.Sprintf("%T", desired), "err", gvkErr)
-			kind = fmt.Sprintf("%T", desired)
-		} else {
-			kind = gvk.Kind
-		}
-	}
-
-	if err := r.Create(r.ctx, desired); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return common.FromClientError(err, "failed to create %s %s", kind, resourceName)
-		}
-
-		r.log.V(1).Info("resource exists on API server but absent from label-filtered cache, restoring desired state",
-			"kind", kind, "name", resourceName)
-		common.RemoveObsoleteAnnotations(desired, resourceMetadata)
-		if err := r.UncachedClient.UpdateWithRetry(r.ctx, desired); err != nil {
-			return common.FromClientError(err, "failed to restore %s %s to desired state", kind, resourceName)
-		}
-		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "%s resource %s restored to desired state", kind, resourceName)
-		return nil
-	}
-	r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "%s resource %s created", kind, resourceName)
-	return nil
-}
-
-// jsonPatchOp is a single JSON Patch operation.
-type jsonPatchOp struct {
-	Op    string      `json:"op"`
-	Path  string      `json:"path"`
-	Value interface{} `json:"value"`
-}
-
-// patchResourceMetadata fully replaces the labels and annotations on an object using a
-// JSON Patch, leaving all other fields untouched. This is safe for co-managed
-// resources where this operator owns all metadata but data fields are owned by an external
-// controller (e.g. CNO-managed ConfigMap data, cert-controller-managed TLS Secret data).
-//
-// JSON Patch "add" on an existing path replaces the entire value, so the resulting
-// labels/annotations on the server exactly match desired.
-//
-// RemoveObsoleteAnnotations is called defensively to strip any deleted annotation keys
-// from desired before building the patch, regardless of whether the caller already did so.
-func (r *Reconciler) patchResourceMetadata(desired client.Object, resourceMetadata common.ResourceMetadata) error {
-	common.RemoveObsoleteAnnotations(desired, resourceMetadata)
-
-	annotations := desired.GetAnnotations()
-	if annotations == nil {
-		annotations = map[string]string{}
-	}
-	labels := desired.GetLabels()
-	if labels == nil {
-		labels = map[string]string{}
-	}
-
-	ops := []jsonPatchOp{
-		{Op: "add", Path: "/metadata/labels", Value: labels},
-		{Op: "add", Path: "/metadata/annotations", Value: annotations},
-	}
-	patchBytes, err := json.Marshal(ops)
-	if err != nil {
-		return fmt.Errorf("failed to marshal metadata patch: %w", err)
-	}
-	return r.CtrlClient.Patch(r.ctx, desired, client.RawPatch(types.JSONPatchType, patchBytes))
-}
-
-func (r *Reconciler) setProxyStatus(esc *operatorv1alpha1.ExternalSecretsConfig) {
-	r.proxyEnabled = esc.Spec.ApplicationConfig.Proxy != nil || (r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Proxy != nil) ||
-		(os.Getenv(httpProxyEnvVar) != "" || os.Getenv(httpsProxyEnvVar) != "" || os.Getenv(noProxyEnvVar) != "")
 }
 
 func (r *Reconciler) isProxyEnabled() bool {
-	return r.proxyEnabled
+	return hasEffectiveProxyURLs(r.proxyConfig)
 }
 
 // hasManagedOrWatchLabel reports whether labels identify an operand resource created
@@ -348,4 +307,68 @@ func (r *Reconciler) updateWatchLabel(key types.NamespacedName, obj client.Objec
 		}
 		return nil
 	})
+}
+
+// createWithFallback attempts to create a resource and handles the AlreadyExists error that
+// occurs when the resource exists on the API server but is invisible to the label-filtered
+// informer cache (e.g. because the managed label app=external-secrets was externally removed).
+func (r *Reconciler) createWithFallback(desired client.Object, resourceMetadata common.ResourceMetadata, resourceName string, esc *operatorv1alpha1.ExternalSecretsConfig) error {
+	kind := desired.GetObjectKind().GroupVersionKind().Kind
+	if kind == "" {
+		gvk, gvkErr := apiutil.GVKForObject(desired, r.Scheme)
+		if gvkErr != nil {
+			r.log.V(5).Info("could not determine GVK, falling back to Go type name",
+				"type", fmt.Sprintf("%T", desired), "err", gvkErr)
+			kind = fmt.Sprintf("%T", desired)
+		} else {
+			kind = gvk.Kind
+		}
+	}
+
+	if err := r.Create(r.ctx, desired); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return common.FromClientError(err, "failed to create %s %s", kind, resourceName)
+		}
+
+		r.log.V(1).Info("resource exists on API server but absent from label-filtered cache, restoring desired state",
+			"kind", kind, "name", resourceName)
+		common.RemoveObsoleteAnnotations(desired, resourceMetadata)
+		if err := r.UncachedClient.UpdateWithRetry(r.ctx, desired); err != nil {
+			return common.FromClientError(err, "failed to restore %s %s to desired state", kind, resourceName)
+		}
+		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "%s resource %s restored to desired state", kind, resourceName)
+		return nil
+	}
+	r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "%s resource %s created", kind, resourceName)
+	return nil
+}
+
+type jsonPatchOp struct {
+	Op    string      `json:"op"`
+	Path  string      `json:"path"`
+	Value interface{} `json:"value"`
+}
+
+// patchResourceMetadata fully replaces labels and annotations using JSON Patch.
+func (r *Reconciler) patchResourceMetadata(desired client.Object, resourceMetadata common.ResourceMetadata) error {
+	common.RemoveObsoleteAnnotations(desired, resourceMetadata)
+
+	annotations := desired.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	labels := desired.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+
+	ops := []jsonPatchOp{
+		{Op: "add", Path: "/metadata/labels", Value: labels},
+		{Op: "add", Path: "/metadata/annotations", Value: annotations},
+	}
+	patchBytes, err := json.Marshal(ops)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata patch: %w", err)
+	}
+	return r.CtrlClient.Patch(r.ctx, desired, client.RawPatch(types.JSONPatchType, patchBytes))
 }

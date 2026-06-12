@@ -20,17 +20,42 @@ limitations under the License.
 
 import (
 	"context"
-	"slices"
+	"fmt"
+	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 
 	appsv1 "k8s.io/api/apps/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
+	"github.com/openshift/external-secrets-operator/pkg/controller/common"
 	"github.com/openshift/external-secrets-operator/test/utils"
 )
+
+// ensureExternalSecretsConfigReady creates the cluster ExternalSecretsConfig CR when missing
+// and waits until Ready=True. Shared by suite Describes that may run before e2e_test BeforeAll.
+func ensureExternalSecretsConfigReady(ctx context.Context) error {
+	if suiteRuntimeClient == nil || suiteDynamicClient == nil {
+		return fmt.Errorf("suite clients not initialized")
+	}
+
+	esc := &operatorv1alpha1.ExternalSecretsConfig{}
+	err := suiteRuntimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc)
+	if err != nil {
+		if !k8serrors.IsNotFound(err) {
+			return err
+		}
+		loader := utils.NewDynamicResourceLoader(ctx, &testing.T{})
+		loader.CreateFromFile(testassets.ReadFile, externalSecretsFile, "")
+	}
+
+	return utils.WaitForExternalSecretsConfigReady(ctx, suiteDynamicClient, common.ExternalSecretsConfigObjectName, 2*time.Minute)
+}
 
 // resourceType defines a Kubernetes resource type to verify annotations on
 type resourceType struct {
@@ -159,65 +184,12 @@ func getResourceTypesToVerify() []resourceType {
 				return objects, nil
 			},
 		},
-		{
-			// ClusterRoles are cluster-scoped; the namespace parameter is unused.
-			name: "ClusterRole",
-			listFunc: func(ctx context.Context, clientset *kubernetes.Clientset, _ string, g Gomega) ([]metav1.Object, error) {
-				clusterRoles, err := clientset.RbacV1().ClusterRoles().List(ctx, listOnlyManagedResources)
-				if err != nil {
-					return nil, err
-				}
-				objects := make([]metav1.Object, 0, len(clusterRoles.Items))
-				for i := range clusterRoles.Items {
-					objects = append(objects, &clusterRoles.Items[i])
-				}
-				return objects, nil
-			},
-		},
-		{
-			// ClusterRoleBindings are cluster-scoped; the namespace parameter is unused.
-			name: "ClusterRoleBinding",
-			listFunc: func(ctx context.Context, clientset *kubernetes.Clientset, _ string, g Gomega) ([]metav1.Object, error) {
-				crbs, err := clientset.RbacV1().ClusterRoleBindings().List(ctx, listOnlyManagedResources)
-				if err != nil {
-					return nil, err
-				}
-				objects := make([]metav1.Object, 0, len(crbs.Items))
-				for i := range crbs.Items {
-					objects = append(objects, &crbs.Items[i])
-				}
-				return objects, nil
-			},
-		},
 	}
 }
 
 // asDeployment safely casts a metav1.Object to an appsv1.Deployment
 func asDeployment(obj metav1.Object) *appsv1.Deployment {
 	return obj.(*appsv1.Deployment)
-}
-
-// getDeploymentContainerArgs returns container args for the named container in a deployment.
-func getDeploymentContainerArgs(deployment *appsv1.Deployment, containerName string) ([]string, bool) {
-	if deployment == nil {
-		return nil, false
-	}
-	for _, container := range deployment.Spec.Template.Spec.Containers {
-		if container.Name == containerName {
-			return container.Args, true
-		}
-	}
-	return nil, false
-}
-
-// deploymentContainerHasArg reports whether the named container has the given arg.
-// The second return value indicates whether the container was found.
-func deploymentContainerHasArg(deployment *appsv1.Deployment, containerName, arg string) (bool, bool) {
-	args, found := getDeploymentContainerArgs(deployment, containerName)
-	if !found {
-		return false, false
-	}
-	return slices.Contains(args, arg), true
 }
 
 // componentConfigsForESC returns component configs that apply to deployments present for the given ESC.

@@ -31,7 +31,7 @@ var (
 // removed from resources (e.g. spec a,b→c,d: we remove a,b from resources first, then patch CR).
 func (r *Reconciler) reconcileExternalSecretsDeployment(esc *operatorv1alpha1.ExternalSecretsConfig, recon bool) error {
 	if err := r.validateExternalSecretsConfig(esc); err != nil {
-		return common.NewIrrecoverableError(err, "%s/%s configuration validation failed", esc.GetObjectKind().GroupVersionKind().String(), esc.GetName())
+		return err
 	}
 
 	resourceMetadata, err := r.getResourceMetadata(esc)

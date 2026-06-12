@@ -40,7 +40,7 @@ func (r *Reconciler) createOrApplyNetworkPolicies(esc *operatorv1alpha1.External
 
 	// TODO: Remove after 3 releases(in v1.5.0) once the migration from
 	// unprefixed to eso-sys-/eso-user- network policy names is no longer needed.
-	if err := r.cleanupMigratedNetworkPolicies(esc, resourceMetadata); err != nil {
+	if err := r.cleanupMigratedNetworkPolicies(esc); err != nil {
 		return err
 	}
 
@@ -144,9 +144,10 @@ func (r *Reconciler) createOrApplyCustomNetworkPolicy(esc *operatorv1alpha1.Exte
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "NetworkPolicy %s updated", networkPolicyName)
 	case !exists:
-		if err := r.createWithFallback(networkPolicy, resourceMetadata, networkPolicyName, esc); err != nil {
-			return err
+		if err := r.Create(r.ctx, networkPolicy); err != nil {
+			return common.FromClientError(err, "failed to create network policy %s", networkPolicyName)
 		}
+		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "NetworkPolicy %s created", networkPolicyName)
 	default:
 		r.log.V(4).Info("NetworkPolicy already up-to-date", "name", networkPolicyName)
 	}
@@ -182,9 +183,10 @@ func (r *Reconciler) createOrApplyNetworkPolicyFromAsset(esc *operatorv1alpha1.E
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "NetworkPolicy %s updated", networkPolicyName)
 	case !exists:
-		if err := r.createWithFallback(networkPolicy, resourceMetadata, networkPolicyName, esc); err != nil {
-			return err
+		if err := r.Create(r.ctx, networkPolicy); err != nil {
+			return common.FromClientError(err, "failed to create network policy %s", networkPolicyName)
 		}
+		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "NetworkPolicy %s created", networkPolicyName)
 	default:
 		r.log.V(4).Info("NetworkPolicy already up-to-date", "name", networkPolicyName)
 	}
@@ -246,13 +248,9 @@ func (r *Reconciler) getPodSelectorForComponent(componentName operatorv1alpha1.C
 // because there is no proxy endpoint to allow traffic to.
 func (r *Reconciler) reconcileProxyEgressPolicy(esc *operatorv1alpha1.ExternalSecretsConfig, resourceMetadata common.ResourceMetadata, recon bool) error {
 	namespace := getNamespace(esc)
-	proxyConfig, err := r.getProxyConfiguration(esc)
-	if err != nil {
-		return fmt.Errorf("failed to get proxy configuration: %w", err)
-	}
-	shouldExist := proxyConfig != nil &&
-		getNetworkPolicyProvisioning(proxyConfig) == operatorv1alpha1.ManagementStateManaged &&
-		(proxyConfig.HTTPSProxy != "" || proxyConfig.HTTPProxy != "")
+	shouldExist := r.proxyConfig != nil &&
+		hasProxyEndpointURLs(r.proxyConfig) &&
+		getNetworkPolicyProvisioning(r.proxyConfig) == operatorv1alpha1.ManagementStateManaged
 	npName := fmt.Sprintf("%s/%s", namespace, proxyEgressPolicyName)
 
 	existing := &networkingv1.NetworkPolicy{}
@@ -272,11 +270,11 @@ func (r *Reconciler) reconcileProxyEgressPolicy(esc *operatorv1alpha1.ExternalSe
 		}
 		return nil
 	}
-
-	np, err := buildProxyEgressNetworkPolicy(proxyConfig, namespace, resourceMetadata)
-	if err != nil {
-		return fmt.Errorf("failed to build proxy egress network policy: %w", err)
+	if exists && recon {
+		r.eventRecorder.Eventf(esc, corev1.EventTypeWarning, "ResourceAlreadyExists", "proxy egress NetworkPolicy %s already exists", npName)
 	}
+
+	np := buildProxyEgressNetworkPolicy(r.proxyConfig, namespace, resourceMetadata)
 	switch {
 	case exists && common.HasObjectChanged(np, existing, &resourceMetadata):
 		r.log.V(1).Info("proxy egress NetworkPolicy modified, updating", "name", npName)
@@ -286,12 +284,10 @@ func (r *Reconciler) reconcileProxyEgressPolicy(esc *operatorv1alpha1.ExternalSe
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "proxy egress NetworkPolicy %s updated", npName)
 	case !exists:
-		if err := r.createWithFallback(np, resourceMetadata, npName, esc); err != nil {
-			return err
+		if err := r.Create(r.ctx, np); err != nil {
+			return common.FromClientError(err, "failed to create proxy egress network policy %s", npName)
 		}
-		if recon {
-			r.eventRecorder.Eventf(esc, corev1.EventTypeWarning, "ResourceAlreadyExists", "proxy egress NetworkPolicy %s already exists", npName)
-		}
+		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "proxy egress NetworkPolicy %s created", npName)
 	default:
 		r.log.V(4).Info("proxy egress NetworkPolicy already up-to-date", "name", npName)
 	}
@@ -310,13 +306,11 @@ func getNetworkPolicyProvisioning(proxyConfig *operatorv1alpha1.ProxyConfig) ope
 // buildProxyEgressNetworkPolicy constructs the eso-sys-allow-proxy-egress NetworkPolicy
 // that allows all ESO pods to reach the proxy server(s) on their configured port(s).
 // When HTTPSProxy and HTTPProxy use different ports, both are included as egress rules.
-func buildProxyEgressNetworkPolicy(proxyConfig *operatorv1alpha1.ProxyConfig, namespace string, resourceMetadata common.ResourceMetadata) (*networkingv1.NetworkPolicy, error) {
-	ports, err := extractProxyPorts(proxyConfig)
-	if err != nil {
-		return nil, err
-	}
+// proxyConfig must already be validated by resolveProxyConfiguration.
+func buildProxyEgressNetworkPolicy(proxyConfig *operatorv1alpha1.ProxyConfig, namespace string, resourceMetadata common.ResourceMetadata) *networkingv1.NetworkPolicy {
+	ports := extractProxyPorts(proxyConfig)
 	if len(ports) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	egressPorts := make([]networkingv1.NetworkPolicyPort, 0, len(ports))
@@ -351,15 +345,15 @@ func buildProxyEgressNetworkPolicy(proxyConfig *operatorv1alpha1.ProxyConfig, na
 		},
 	}
 	common.ApplyResourceMetadata(np, resourceMetadata)
-	return np, nil
+	return np
 }
 
-// extractProxyPorts returns the set of TCP ports for the proxy egress
-// NetworkPolicy, derived from both HTTPSProxy and HTTPProxy URLs in proxyConfig.
-// An explicit port in a URL is used directly; otherwise scheme defaults apply
-// (443 for https, 80 for http). Returns an empty slice when neither
-// proxy URL yields a port(e.g. only NO_PROXY is configured)
-func extractProxyPorts(proxyConfig *operatorv1alpha1.ProxyConfig) ([]int, error) {
+// extractProxyPorts returns the set of TCP ports for the proxy egress NetworkPolicy,
+// derived from both HTTPSProxy and HTTPProxy URLs in proxyConfig. An explicit port in a
+// URL is used directly; otherwise scheme defaults apply (443 for https, 80 for http).
+// Returns an empty slice when neither proxy URL yields a port (e.g. only NO_PROXY is
+// configured). proxyConfig must already be validated by resolveProxyConfiguration.
+func extractProxyPorts(proxyConfig *operatorv1alpha1.ProxyConfig) []int {
 	seen := map[int]struct{}{}
 	var ports []int
 
@@ -367,19 +361,10 @@ func extractProxyPorts(proxyConfig *operatorv1alpha1.ProxyConfig) ([]int, error)
 		if raw == "" {
 			continue
 		}
-		u, err := url.Parse(raw)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse proxy URL %q: %w", raw, err)
-		}
+		u, _ := url.Parse(raw)
 		port := 0
 		if p := u.Port(); p != "" {
-			port, err = strconv.Atoi(p)
-			if err != nil {
-				return nil, fmt.Errorf("invalid port %q in proxy URL %q: %w", p, raw, err)
-			}
-			if port < 1 || port > 65535 {
-				return nil, fmt.Errorf("port %d out of range in proxy URL %q", port, raw)
-			}
+			port, _ = strconv.Atoi(p)
 		}
 		if port == 0 {
 			switch strings.ToLower(u.Scheme) {
@@ -397,7 +382,7 @@ func extractProxyPorts(proxyConfig *operatorv1alpha1.ProxyConfig) ([]int, error)
 		}
 	}
 
-	return ports, nil
+	return ports
 }
 
 // TODO: Remove after 3 releases(in v1.5.0) once the migration from
@@ -431,7 +416,7 @@ func legacyOperatorNetworkPolicyNames(esc *operatorv1alpha1.ExternalSecretsConfi
 //
 // The cleanup runs only once per CR lifetime: after a successful pass the
 // skipNPCleanupAnnotation is written to the CR so subsequent reconciles skip the loop.
-func (r *Reconciler) cleanupMigratedNetworkPolicies(esc *operatorv1alpha1.ExternalSecretsConfig, resourceMetadata common.ResourceMetadata) error {
+func (r *Reconciler) cleanupMigratedNetworkPolicies(esc *operatorv1alpha1.ExternalSecretsConfig) error {
 	if esc.GetAnnotations()[skipNPCleanupAnnotation] == "true" {
 		return nil
 	}
