@@ -83,9 +83,9 @@ const (
 const (
 	userNPPrefix            = "eso-user-"
 	npProxyEgressPolicyName = "eso-sys-allow-proxy-egress"
-	managedByLabel = "app.kubernetes.io/managed-by"
-	partOfLabel    = "app.kubernetes.io/part-of"
-	managedByValue = "external-secrets-operator"
+	managedByLabel          = "app.kubernetes.io/managed-by"
+	partOfLabel             = "app.kubernetes.io/part-of"
+	managedByValue          = "external-secrets-operator"
 )
 
 var expectedStaticNPNames = []string{
@@ -1020,7 +1020,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			Expect(err).NotTo(HaveOccurred(), "should set proxy config with Unmanaged provisioning")
 
 			By("Verifying proxy egress policy is not created")
-			Consistently(func(g Gomega) {
+			Eventually(func(g Gomega) {
 				_, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npProxyEgressPolicyName, metav1.GetOptions{})
 				g.Expect(err).To(HaveOccurred(), "proxy egress policy should not exist when provisioning is Unmanaged")
 			}, 30*time.Second, 5*time.Second).Should(Succeed())
