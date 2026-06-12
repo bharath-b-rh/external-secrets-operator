@@ -417,9 +417,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 				}
 
 				updatedCR := existingCR.DeepCopy()
-				updatedCR.Spec.ControllerConfig = operatorv1alpha1.ControllerConfig{
-					ComponentConfigs: applicableEnvConfigs,
-				}
+				updatedCR.Spec.ControllerConfig.ComponentConfigs = applicableEnvConfigs
 
 				return runtimeClient.Update(ctx, updatedCR)
 			})
@@ -468,9 +466,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 				}
 
 				updatedCR := existingCR.DeepCopy()
-				updatedCR.Spec.ControllerConfig = operatorv1alpha1.ControllerConfig{
-					ComponentConfigs: nil,
-				}
+				updatedCR.Spec.ControllerConfig.ComponentConfigs = nil
 
 				return runtimeClient.Update(ctx, updatedCR)
 			})

@@ -150,6 +150,17 @@ func TestValidateTrustedCABundleData(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "valid CA with trailing whitespace",
+			data:    validCA + "\n\n",
+			wantErr: false,
+		},
+		{
+			name:       "valid CA with trailing non-PEM garbage",
+			data:       validCA + "\nthis is not pem",
+			wantErr:    true,
+			wantReason: trustedCABundleEventInvalidPEM,
+		},
+		{
 			name:       "leaf certificate",
 			data:       validLeaf,
 			wantErr:    true,

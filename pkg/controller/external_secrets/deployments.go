@@ -527,9 +527,9 @@ func removeProxyEnvironmentVariables(deployment *appsv1.Deployment) {
 }
 
 // mergeContainerEnvVars updates, adds, or removes environment variables in the target container
-// based on the provided map. Existing variables matching keys in the map are updated with their
-// new values, while keys with empty string values are removed from the container. Any entirely
-// new keys are appended, and unmanaged environment variables are untouched.
+// based on the provided map. Managed keys from envVars are applied in sorted name order so
+// container.Env stays stable across reconciles. Keys with empty string values are omitted.
+// Unmanaged environment variables from the container are appended after managed keys.
 func mergeContainerEnvVars(container *corev1.Container, envVars map[string]string) {
 	if envVars == nil {
 		return
@@ -537,8 +537,14 @@ func mergeContainerEnvVars(container *corev1.Container, envVars map[string]strin
 
 	newEnv := make([]corev1.EnvVar, 0, len(container.Env)+len(envVars))
 
-	for name, value := range envVars {
-		if value != "" {
+	names := make([]string, 0, len(envVars))
+	for name := range envVars {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	for _, name := range names {
+		if value := envVars[name]; value != "" {
 			newEnv = append(newEnv, corev1.EnvVar{
 				Name:  name,
 				Value: value,

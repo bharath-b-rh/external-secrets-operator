@@ -21,7 +21,6 @@ package utils
 
 import (
 	"context"
-	"fmt"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -40,7 +39,7 @@ import (
 )
 
 const (
-	operandLabelSelector = fmt.Sprint("%s=%s", externalsecrets.ManagedResourceLabelKey, externalsecrets.ManagedResourceLabelValue)
+	operandLabelSelector = externalsecrets.ManagedResourceLabelKey + "=" + externalsecrets.ManagedResourceLabelValue
 )
 
 // CleanupESOOperandAndRelated removes operand CR instances (by listing CRDs with app=external-secrets),

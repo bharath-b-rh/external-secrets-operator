@@ -1711,6 +1711,92 @@ func TestMergeEnvVars(t *testing.T) {
 	}
 }
 
+func TestMergeContainerEnvVars(t *testing.T) {
+	t.Parallel()
+
+	t.Run("managed env vars are sorted by name", func(t *testing.T) {
+		t.Parallel()
+		container := &corev1.Container{
+			Env: []corev1.EnvVar{{Name: "UNMANAGED", Value: "keep"}},
+		}
+		mergeContainerEnvVars(container, map[string]string{
+			httpsProxyEnvVar:          "https://proxy:8080",
+			httpProxyEnvVar:           "http://proxy:8080",
+			noProxyEnvVar:             ".cluster.local",
+			httpProxyEnvVarLowercase:  "http://proxy:8080",
+			httpsProxyEnvVarLowercase: "https://proxy:8080",
+			noProxyEnvVarLowercase:    ".cluster.local",
+		})
+
+		wantManaged := []string{
+			httpsProxyEnvVar,
+			httpProxyEnvVar,
+			noProxyEnvVar,
+			httpProxyEnvVarLowercase,
+			httpsProxyEnvVarLowercase,
+			noProxyEnvVarLowercase,
+		}
+		if len(container.Env) != len(wantManaged)+1 {
+			t.Fatalf("got %d env vars, want %d", len(container.Env), len(wantManaged)+1)
+		}
+		for i, name := range wantManaged {
+			if container.Env[i].Name != name {
+				t.Fatalf("managed env[%d].Name = %q, want %q", i, container.Env[i].Name, name)
+			}
+		}
+		if container.Env[len(wantManaged)].Name != "UNMANAGED" {
+			t.Fatalf("unmanaged env = %q, want UNMANAGED", container.Env[len(wantManaged)].Name)
+		}
+	})
+
+	t.Run("repeated merge produces identical env order", func(t *testing.T) {
+		t.Parallel()
+		envVars := map[string]string{
+			httpsProxyEnvVar: "https://proxy:8080",
+			httpProxyEnvVar:  "http://proxy:8080",
+			noProxyEnvVar:    ".cluster.local",
+		}
+		first := &corev1.Container{
+			Env: []corev1.EnvVar{{Name: "LOG_LEVEL", Value: "info"}},
+		}
+		second := &corev1.Container{
+			Env: []corev1.EnvVar{{Name: "LOG_LEVEL", Value: "info"}},
+		}
+
+		for range 10 {
+			mergeContainerEnvVars(first, envVars)
+		}
+		for range 10 {
+			mergeContainerEnvVars(second, envVars)
+		}
+
+		if !reflect.DeepEqual(first.Env, second.Env) {
+			t.Fatalf("env order not stable across merges:\nfirst:  %#v\nsecond: %#v", first.Env, second.Env)
+		}
+	})
+
+	t.Run("empty value omits managed key", func(t *testing.T) {
+		t.Parallel()
+		container := &corev1.Container{
+			Env: []corev1.EnvVar{
+				{Name: httpProxyEnvVar, Value: "old"},
+				{Name: "OTHER", Value: "x"},
+			},
+		}
+		mergeContainerEnvVars(container, map[string]string{
+			httpProxyEnvVar: "",
+		})
+		for _, env := range container.Env {
+			if env.Name == httpProxyEnvVar {
+				t.Fatal("expected http proxy env var to be removed")
+			}
+		}
+		if len(container.Env) != 1 || container.Env[0].Name != "OTHER" {
+			t.Fatalf("unexpected env: %#v", container.Env)
+		}
+	})
+}
+
 func TestApplyUserDeploymentConfigsWithOverrideEnv(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -1981,6 +2067,7 @@ func TestApplyUserCABundleConfig(t *testing.T) {
 		name         string
 		esc          *v1alpha1.ExternalSecretsConfig
 		cm           *corev1.ConfigMap
+		cmNotFound   bool
 		deployment   *appsv1.Deployment
 		proxyEnabled bool
 		wantErr      bool
@@ -2133,8 +2220,9 @@ func TestApplyUserCABundleConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "removes user CA config when ConfigMap is missing",
-			esc:  baseESC,
+			name:       "removes user CA config when ConfigMap is missing",
+			esc:        baseESC,
+			cmNotFound: true,
 			deployment: &appsv1.Deployment{
 				Spec: appsv1.DeploymentSpec{
 					Template: corev1.PodTemplateSpec{
@@ -2192,7 +2280,7 @@ func TestApplyUserCABundleConfig(t *testing.T) {
 			switch {
 			case tt.cm != nil:
 				cached, uncached = setupConfigMapClients(t, tt.cm)
-			case tt.name == "removes user CA config when ConfigMap is missing":
+			case tt.cmNotFound:
 				cached = &fakes.FakeCtrlClient{}
 				uncached = &fakes.FakeCtrlClient{}
 				notFound := func(_ context.Context, ns types.NamespacedName, _ client.Object) error {

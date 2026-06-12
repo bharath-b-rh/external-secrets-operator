@@ -136,6 +136,12 @@ func parsePEMCABundle(data string) error {
 			message:     "trusted CA bundle contains no valid PEM-encoded CA certificates",
 		}
 	}
+	if strings.TrimSpace(string(rest)) != "" {
+		return &trustedCABundleValidationError{
+			eventReason: trustedCABundleEventInvalidPEM,
+			message:     "trusted CA bundle contains trailing non-PEM data",
+		}
+	}
 	return nil
 }
 
