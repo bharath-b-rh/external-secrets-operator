@@ -57,7 +57,9 @@ type AssetFunc func(string) ([]byte, error)
 
 // VerifyPodsReadyByPrefix checks if all pods matching the given prefixes are Ready and ContainersReady.
 func VerifyPodsReadyByPrefix(ctx context.Context, clientset kubernetes.Interface, namespace string, prefixes []string) error {
-	return wait.PollUntilContextTimeout(ctx, 5*time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+	// 5 minutes: allows for image-pull latency in CI (can be 60-90s from Docker Hub)
+	// plus initialDelaySeconds:20 + up to failureThreshold:10 x periodSeconds:5 = 70s probe window.
+	return wait.PollUntilContextTimeout(ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
 		podList, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return false, err
