@@ -10,6 +10,7 @@ import (
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
 	"go.uber.org/zap/zapcore"
 
@@ -213,14 +214,22 @@ func validateProxy(rawURL string) error {
 // uncached client to update the resource directly on the API server, restoring the managed
 // labels and annotations to the desired state.
 func (r *Reconciler) createWithFallback(desired client.Object, resourceMetadata common.ResourceMetadata, resourceName string) error {
+	gvk, gvkErr := apiutil.GVKForObject(desired, r.Scheme)
+	kind := desired.GetObjectKind().GroupVersionKind().Kind
+	if gvkErr == nil {
+		kind = gvk.Kind
+	}
+
 	if err := r.Create(r.ctx, desired); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
-			return common.FromClientError(err, "failed to create %s", resourceName)
+			return common.FromClientError(err, "failed to create %s %s", kind, resourceName)
 		}
-		r.log.V(1).Info("resource exists on API server but absent from label-filtered cache (managed labels may have been externally modified), restoring desired state", "name", resourceName)
+
+		r.log.V(1).Info("resource exists on API server but absent from label-filtered cache, restoring desired state",
+			"kind", kind, "name", resourceName)
 		common.RemoveObsoleteAnnotations(desired, resourceMetadata)
 		if err := r.UncachedClient.UpdateWithRetry(r.ctx, desired); err != nil {
-			return common.FromClientError(err, "failed to restore %s to desired state", resourceName)
+			return common.FromClientError(err, "failed to restore %s %s to desired state", kind, resourceName)
 		}
 	}
 	return nil

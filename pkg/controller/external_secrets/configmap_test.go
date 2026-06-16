@@ -36,7 +36,7 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 		preReq           func(r *Reconciler, cached *fakes.FakeCtrlClient, uncached *fakes.FakeCtrlClient)
 		wantErr          string
 		wantCreate       bool
-		wantUpdate       bool
+		wantPatch        bool
 		noProxy          bool
 	}{
 		{
@@ -79,10 +79,9 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 					return true, nil
 				})
 			},
-			wantUpdate: false,
 		},
 		{
-			name:             "ConfigMap exists with wrong labels, update triggered",
+			name:             "ConfigMap exists with wrong labels, patch triggered",
 			resourceMetadata: testResourceMetadata(commontest.TestExternalSecretsConfig()),
 			preReq: func(_ *Reconciler, cached *fakes.FakeCtrlClient, _ *fakes.FakeCtrlClient) {
 				cached.ExistsCalls(func(_ context.Context, _ types.NamespacedName, obj client.Object) (bool, error) {
@@ -97,21 +96,21 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 					existing.DeepCopyInto(obj.(*corev1.ConfigMap))
 					return true, nil
 				})
-				cached.UpdateWithRetryCalls(func(_ context.Context, obj client.Object, _ ...client.UpdateOption) error {
+				cached.PatchCalls(func(_ context.Context, obj client.Object, patch client.Patch, _ ...client.PatchOption) error {
 					cm, ok := obj.(*corev1.ConfigMap)
 					if !ok {
 						t.Errorf("expected ConfigMap, got %T", obj)
 					}
 					if cm.Labels[trustedCABundleInjectLabel] != "true" {
-						t.Errorf("expected inject label restored, got %q", cm.Labels[trustedCABundleInjectLabel])
+						t.Errorf("expected inject label in patch target, got %q", cm.Labels[trustedCABundleInjectLabel])
 					}
-					if cm.Data["ca-bundle.crt"] != "cert-data" {
-						t.Errorf("CNO-managed data should be preserved, got %v", cm.Data)
+					if patch.Type() != types.MergePatchType {
+						t.Errorf("expected MergePatch, got %s", patch.Type())
 					}
 					return nil
 				})
 			},
-			wantUpdate: true,
+			wantPatch: true,
 		},
 		{
 			// Regression test for: labels updating with app: external-secrets of cm
@@ -119,51 +118,36 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 			//
 			// When the managed label (app=external-secrets) is removed from the ConfigMap,
 			// the object falls out of the label-filtered cache. The cached Exists() returns
-			// false, Create() fails with AlreadyExists, and the controller must use the
-			// uncached client to fetch and restore the correct labels instead of returning
-			// an error that blocks reconciliation.
-			name:             "Create returns AlreadyExists (label-filtered cache miss): uncached client restores labels",
+			// false, Create() fails with AlreadyExists, and the controller must patch only
+			// the metadata (labels/annotations) via the uncached client, leaving
+			// CNO-managed Data/BinaryData untouched.
+			name:             "Create returns AlreadyExists (label-filtered cache miss): uncached client patches metadata",
 			resourceMetadata: testResourceMetadata(commontest.TestExternalSecretsConfig()),
 			preReq: func(_ *Reconciler, cached *fakes.FakeCtrlClient, uncached *fakes.FakeCtrlClient) {
-				// Cached client doesn't see the ConfigMap because its label was changed.
 				cached.ExistsCalls(func(_ context.Context, _ types.NamespacedName, _ client.Object) (bool, error) {
 					return false, nil
 				})
 				cached.CreateCalls(func(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
 					return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, trustedCABundleConfigMapName)
 				})
-				// Uncached client fetches the real object from the API server.
-				uncached.ExistsCalls(func(_ context.Context, _ types.NamespacedName, obj client.Object) (bool, error) {
-					existing := &corev1.ConfigMap{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:            trustedCABundleConfigMapName,
-							Namespace:       commontest.TestExternalSecretsNamespace,
-							ResourceVersion: "1000",
-							Labels:          map[string]string{"app": "update-secrets"},
-						},
-						Data: cnoData,
-					}
-					existing.DeepCopyInto(obj.(*corev1.ConfigMap))
-					return true, nil
-				})
-				uncached.UpdateWithRetryCalls(func(_ context.Context, obj client.Object, _ ...client.UpdateOption) error {
+				uncached.PatchCalls(func(_ context.Context, obj client.Object, patch client.Patch, _ ...client.PatchOption) error {
 					cm, ok := obj.(*corev1.ConfigMap)
 					if !ok {
 						t.Errorf("expected ConfigMap, got %T", obj)
 					}
 					if cm.Labels["app"] != "external-secrets" {
-						t.Errorf("expected app=external-secrets label restored, got %q", cm.Labels["app"])
+						t.Errorf("expected app=external-secrets label in patch target, got %q", cm.Labels["app"])
 					}
 					if cm.Labels[trustedCABundleInjectLabel] != "true" {
-						t.Errorf("expected inject label restored, got %q", cm.Labels[trustedCABundleInjectLabel])
+						t.Errorf("expected inject label in patch target, got %q", cm.Labels[trustedCABundleInjectLabel])
 					}
-					if cm.Data["ca-bundle.crt"] != "cert-data" {
-						t.Errorf("CNO-managed data should be preserved, got %v", cm.Data)
+					if patch.Type() != types.MergePatchType {
+						t.Errorf("expected MergePatch, got %s", patch.Type())
 					}
 					return nil
 				})
 			},
-			wantUpdate: true,
+			wantPatch: true,
 		},
 		{
 			name:             "proxy not configured: ConfigMap reconcile skipped",
@@ -194,7 +178,7 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 			wantErr: "failed to create external-secrets/external-secrets-trusted-ca-bundle trusted CA bundle ConfigMap resource: test client error",
 		},
 		{
-			name:             "uncached Exists fails after AlreadyExists from Create",
+			name:             "uncached Patch fails after AlreadyExists from Create",
 			resourceMetadata: testResourceMetadata(commontest.TestExternalSecretsConfig()),
 			preReq: func(_ *Reconciler, cached *fakes.FakeCtrlClient, uncached *fakes.FakeCtrlClient) {
 				cached.ExistsCalls(func(_ context.Context, _ types.NamespacedName, _ client.Object) (bool, error) {
@@ -203,42 +187,14 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 				cached.CreateCalls(func(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
 					return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, trustedCABundleConfigMapName)
 				})
-				uncached.ExistsCalls(func(_ context.Context, _ types.NamespacedName, _ client.Object) (bool, error) {
-					return false, commontest.ErrTestClient
-				})
-			},
-			wantErr: "failed to fetch existing external-secrets/external-secrets-trusted-ca-bundle trusted CA bundle ConfigMap for restoration: test client error",
-		},
-		{
-			name:             "uncached UpdateWithRetry fails after AlreadyExists from Create",
-			resourceMetadata: testResourceMetadata(commontest.TestExternalSecretsConfig()),
-			preReq: func(_ *Reconciler, cached *fakes.FakeCtrlClient, uncached *fakes.FakeCtrlClient) {
-				cached.ExistsCalls(func(_ context.Context, _ types.NamespacedName, _ client.Object) (bool, error) {
-					return false, nil
-				})
-				cached.CreateCalls(func(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
-					return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, trustedCABundleConfigMapName)
-				})
-				uncached.ExistsCalls(func(_ context.Context, _ types.NamespacedName, obj client.Object) (bool, error) {
-					existing := &corev1.ConfigMap{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:            trustedCABundleConfigMapName,
-							Namespace:       commontest.TestExternalSecretsNamespace,
-							ResourceVersion: "1000",
-							Labels:          map[string]string{"app": "update-secrets"},
-						},
-					}
-					existing.DeepCopyInto(obj.(*corev1.ConfigMap))
-					return true, nil
-				})
-				uncached.UpdateWithRetryCalls(func(_ context.Context, _ client.Object, _ ...client.UpdateOption) error {
+				uncached.PatchCalls(func(_ context.Context, _ client.Object, _ client.Patch, _ ...client.PatchOption) error {
 					return commontest.ErrTestClient
 				})
 			},
-			wantErr: "failed to restore external-secrets/external-secrets-trusted-ca-bundle trusted CA bundle ConfigMap to desired state: test client error",
+			wantErr: "failed to patch external-secrets/external-secrets-trusted-ca-bundle trusted CA bundle ConfigMap metadata: test client error",
 		},
 		{
-			name:             "cached UpdateWithRetry fails when ConfigMap has wrong labels",
+			name:             "cached Patch fails when ConfigMap has wrong labels",
 			resourceMetadata: testResourceMetadata(commontest.TestExternalSecretsConfig()),
 			preReq: func(_ *Reconciler, cached *fakes.FakeCtrlClient, _ *fakes.FakeCtrlClient) {
 				cached.ExistsCalls(func(_ context.Context, _ types.NamespacedName, obj client.Object) (bool, error) {
@@ -252,11 +208,11 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 					existing.DeepCopyInto(obj.(*corev1.ConfigMap))
 					return true, nil
 				})
-				cached.UpdateWithRetryCalls(func(_ context.Context, _ client.Object, _ ...client.UpdateOption) error {
+				cached.PatchCalls(func(_ context.Context, _ client.Object, _ client.Patch, _ ...client.PatchOption) error {
 					return commontest.ErrTestClient
 				})
 			},
-			wantErr: "failed to update external-secrets/external-secrets-trusted-ca-bundle trusted CA bundle ConfigMap resource: test client error",
+			wantErr: "failed to patch external-secrets/external-secrets-trusted-ca-bundle trusted CA bundle ConfigMap metadata: test client error",
 		},
 	}
 
@@ -293,11 +249,11 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 			if tt.wantCreate && cached.CreateCallCount() == 0 {
 				t.Error("expected Create to be called, but it wasn't")
 			}
-			if tt.wantUpdate && cached.UpdateWithRetryCallCount() == 0 && uncached.UpdateWithRetryCallCount() == 0 {
-				t.Error("expected UpdateWithRetry to be called (on cached or uncached client), but it wasn't")
+			if tt.wantPatch && cached.PatchCallCount() == 0 && uncached.PatchCallCount() == 0 {
+				t.Error("expected Patch to be called (on cached or uncached client), but it wasn't")
 			}
-			if !tt.wantUpdate && (cached.UpdateWithRetryCallCount() > 0 || uncached.UpdateWithRetryCallCount() > 0) {
-				t.Error("expected no UpdateWithRetry call, but one was made")
+			if !tt.wantPatch && (cached.PatchCallCount() > 0 || uncached.PatchCallCount() > 0) {
+				t.Error("expected no Patch call, but one was made")
 			}
 		})
 	}

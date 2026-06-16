@@ -1,15 +1,18 @@
 package external_secrets
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
+	operatorclient "github.com/openshift/external-secrets-operator/pkg/controller/client"
 	"github.com/openshift/external-secrets-operator/pkg/controller/common"
 )
 
@@ -59,24 +62,17 @@ func (r *Reconciler) ensureTrustedCABundleConfigMap(esc *operatorv1alpha1.Extern
 
 	if !exist {
 		// NOTE: This ConfigMap cannot use the generic createWithFallback helper because
-		// the Data field is managed by CNO (not by this operator). A plain UpdateWithRetry
-		// with our empty-Data desired object would wipe the CA certificates CNO injected.
-		// Instead, on AlreadyExists we must fetch the real object first, preserve its Data,
-		// then update only labels/annotations.
+		// the Data/BinaryData fields are managed by CNO (not by this operator). On
+		// AlreadyExists we use a MergePatch that touches only metadata, leaving
+		// CNO-injected CA certificates untouched.
 		if err := r.Create(r.ctx, desiredConfigMap); err != nil {
 			if !apierrors.IsAlreadyExists(err) {
 				return common.FromClientError(err, "failed to create %s trusted CA bundle ConfigMap resource", configMapName)
 			}
-			r.log.V(1).Info("trusted CA bundle ConfigMap exists on API server but absent from label-filtered cache, restoring desired state", "name", configMapName)
-			actualConfigMap := &corev1.ConfigMap{}
-			if _, fetchErr := r.UncachedClient.Exists(r.ctx, client.ObjectKeyFromObject(desiredConfigMap), actualConfigMap); fetchErr != nil {
-				return common.FromClientError(fetchErr, "failed to fetch existing %s trusted CA bundle ConfigMap for restoration", configMapName)
-			}
-			desiredConfigMap.Data = actualConfigMap.Data
-			desiredConfigMap.BinaryData = actualConfigMap.BinaryData
+			r.log.V(1).Info("trusted CA bundle ConfigMap exists on API server but absent from label-filtered cache, patching metadata", "name", configMapName)
 			common.RemoveObsoleteAnnotations(desiredConfigMap, resourceMetadata)
-			if updateErr := r.UncachedClient.UpdateWithRetry(r.ctx, desiredConfigMap); updateErr != nil {
-				return common.FromClientError(updateErr, "failed to restore %s trusted CA bundle ConfigMap to desired state", configMapName)
+			if patchErr := r.patchConfigMapMetadata(desiredConfigMap, r.UncachedClient); patchErr != nil {
+				return common.FromClientError(patchErr, "failed to patch %s trusted CA bundle ConfigMap metadata", configMapName)
 			}
 			r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "trusted CA bundle ConfigMap resource %s restored to desired state", configMapName)
 			return nil
@@ -85,17 +81,13 @@ func (r *Reconciler) ensureTrustedCABundleConfigMap(esc *operatorv1alpha1.Extern
 		return nil
 	}
 
-	// ConfigMap exists, ensure it has the correct labels and annotations.
-	// Do not update the data of the ConfigMap since it is managed by CNO.
-	// MergeFetchedAnnotations preserves external annotations (e.g., CNO's openshift.io/owning-component).
+	// ConfigMap exists in cache — ensure it has the correct labels and annotations.
+	// Use a metadata-only patch so CNO-managed Data/BinaryData are never touched.
 	if exist && common.ObjectMetadataModified(desiredConfigMap, existingConfigMap, &resourceMetadata) {
-		r.log.V(1).Info("trusted CA bundle ConfigMap has been modified, updating to desired state", "name", configMapName)
-		// Preserve data from existing ConfigMap (managed by CNO)
-		desiredConfigMap.Data = existingConfigMap.Data
-		desiredConfigMap.BinaryData = existingConfigMap.BinaryData
+		r.log.V(1).Info("trusted CA bundle ConfigMap has been modified, patching metadata to desired state", "name", configMapName)
 		common.RemoveObsoleteAnnotations(desiredConfigMap, resourceMetadata)
-		if err := r.UpdateWithRetry(r.ctx, desiredConfigMap); err != nil {
-			return common.FromClientError(err, "failed to update %s trusted CA bundle ConfigMap resource", configMapName)
+		if err := r.patchConfigMapMetadata(desiredConfigMap, r.CtrlClient); err != nil {
+			return common.FromClientError(err, "failed to patch %s trusted CA bundle ConfigMap metadata", configMapName)
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "trusted CA bundle ConfigMap resource %s reconciled back to desired state", configMapName)
 	} else {
@@ -103,6 +95,25 @@ func (r *Reconciler) ensureTrustedCABundleConfigMap(esc *operatorv1alpha1.Extern
 	}
 
 	return nil
+}
+
+// patchConfigMapMetadata sends a MergePatch that sets only labels and annotations
+// on the ConfigMap, leaving all other fields (especially Data/BinaryData managed
+// by CNO) untouched. The caller chooses the client: the cached client when the
+// object is visible in the informer cache, or the uncached client when it has
+// fallen out of the label-filtered cache.
+func (r *Reconciler) patchConfigMapMetadata(desired *corev1.ConfigMap, patchClient operatorclient.CtrlClient) error {
+	patch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"labels":      desired.Labels,
+			"annotations": desired.Annotations,
+		},
+	}
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata patch: %w", err)
+	}
+	return patchClient.Patch(r.ctx, desired, client.RawPatch(types.MergePatchType, patchBytes))
 }
 
 // getTrustedCABundleLabels merges resource labels with the injection label.

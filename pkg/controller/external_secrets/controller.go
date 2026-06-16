@@ -270,20 +270,40 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return object.GetLabels() != nil && object.GetLabels()[requestEnqueueLabelKey] == requestEnqueueLabelValue
 	}
 
+	logIgnored := func(obj client.Object) {
+		r.log.V(4).Info("object not of interest, ignoring reconcile event", "object", fmt.Sprintf("%T", obj), "name", obj.GetName(), "namespace", obj.GetNamespace())
+	}
+
 	// On updates, check both old and new objects so that events where the managed
 	// label is removed externally still trigger reconciliation and label restoration.
 	managedResources := predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
-			return isManagedResource(e.Object)
+			if !isManagedResource(e.Object) {
+				logIgnored(e.Object)
+				return false
+			}
+			return true
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			return isManagedResource(e.ObjectOld) || isManagedResource(e.ObjectNew)
+			if !isManagedResource(e.ObjectOld) && !isManagedResource(e.ObjectNew) {
+				logIgnored(e.ObjectNew)
+				return false
+			}
+			return true
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
-			return isManagedResource(e.Object)
+			if !isManagedResource(e.Object) {
+				logIgnored(e.Object)
+				return false
+			}
+			return true
 		},
 		GenericFunc: func(e event.GenericEvent) bool {
-			return isManagedResource(e.Object)
+			if !isManagedResource(e.Object) {
+				logIgnored(e.Object)
+				return false
+			}
+			return true
 		},
 	}
 

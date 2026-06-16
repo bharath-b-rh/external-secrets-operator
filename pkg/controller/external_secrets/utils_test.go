@@ -41,7 +41,7 @@ func TestCreateWithFallback(t *testing.T) {
 					return commontest.ErrTestClient
 				})
 			},
-			wantErr: "failed to create test-ns/test-sa: test client error",
+			wantErr: "failed to create ServiceAccount test-ns/test-sa: test client error",
 		},
 		{
 			name: "AlreadyExists triggers uncached update to restore labels",
@@ -68,7 +68,7 @@ func TestCreateWithFallback(t *testing.T) {
 					return commontest.ErrTestClient
 				})
 			},
-			wantErr:    "failed to restore test-ns/test-sa to desired state: test client error",
+			wantErr:    "failed to restore ServiceAccount test-ns/test-sa to desired state: test client error",
 			wantUpdate: true,
 		},
 	}
