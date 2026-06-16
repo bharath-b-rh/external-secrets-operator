@@ -155,7 +155,7 @@ func TestCreateOrApplySecret(t *testing.T) {
 					return nil
 				})
 			},
-			wantErr: fmt.Sprintf("failed to create %s/%s secret resource: %s", commontest.TestExternalSecretsNamespace, testValidateSecretResourceName, commontest.ErrTestClient),
+			wantErr: fmt.Sprintf("failed to create %s/%s: %s", commontest.TestExternalSecretsNamespace, testValidateSecretResourceName, commontest.ErrTestClient),
 		},
 		{
 			name: "successful secret creation",

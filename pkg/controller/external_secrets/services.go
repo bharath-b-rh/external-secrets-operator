@@ -74,8 +74,8 @@ func (r *Reconciler) createOrApplyServiceFromAsset(esc *operatorv1alpha1.Externa
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "Service %s updated", serviceName)
 	case !exists:
-		if err := r.Create(r.ctx, service); err != nil {
-			return common.FromClientError(err, "failed to create service %s", serviceName)
+		if err := r.createWithFallback(service, resourceMetadata, serviceName); err != nil {
+			return err
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "Service %s created", serviceName)
 	default:

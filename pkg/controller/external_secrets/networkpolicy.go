@@ -144,8 +144,8 @@ func (r *Reconciler) createOrApplyCustomNetworkPolicy(esc *operatorv1alpha1.Exte
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "NetworkPolicy %s updated", networkPolicyName)
 	case !exists:
-		if err := r.Create(r.ctx, networkPolicy); err != nil {
-			return common.FromClientError(err, "failed to create network policy %s", networkPolicyName)
+		if err := r.createWithFallback(networkPolicy, resourceMetadata, networkPolicyName); err != nil {
+			return err
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "NetworkPolicy %s created", networkPolicyName)
 	default:
@@ -183,8 +183,8 @@ func (r *Reconciler) createOrApplyNetworkPolicyFromAsset(esc *operatorv1alpha1.E
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "NetworkPolicy %s updated", networkPolicyName)
 	case !exists:
-		if err := r.Create(r.ctx, networkPolicy); err != nil {
-			return common.FromClientError(err, "failed to create network policy %s", networkPolicyName)
+		if err := r.createWithFallback(networkPolicy, resourceMetadata, networkPolicyName); err != nil {
+			return err
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "NetworkPolicy %s created", networkPolicyName)
 	default:
@@ -288,8 +288,8 @@ func (r *Reconciler) reconcileProxyEgressPolicy(esc *operatorv1alpha1.ExternalSe
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "proxy egress NetworkPolicy %s updated", npName)
 	case !exists:
-		if err := r.Create(r.ctx, np); err != nil {
-			return common.FromClientError(err, "failed to create proxy egress network policy %s", npName)
+		if err := r.createWithFallback(np, resourceMetadata, npName); err != nil {
+			return err
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "proxy egress NetworkPolicy %s created", npName)
 		if recon {

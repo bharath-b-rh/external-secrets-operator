@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -201,5 +202,26 @@ func validateProxy(rawURL string) error {
 		return fmt.Errorf("proxy URL must include valid scheme and host")
 	}
 
+	return nil
+}
+
+// createWithFallback attempts to create a resource and handles the AlreadyExists error that
+// occurs when the resource exists on the API server but is invisible to the label-filtered
+// informer cache (e.g. because the managed label app=external-secrets was externally removed).
+//
+// When Create returns AlreadyExists, this method bypasses the stale cache by using the
+// uncached client to update the resource directly on the API server, restoring the managed
+// labels and annotations to the desired state.
+func (r *Reconciler) createWithFallback(desired client.Object, resourceMetadata common.ResourceMetadata, resourceName string) error {
+	if err := r.Create(r.ctx, desired); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return common.FromClientError(err, "failed to create %s", resourceName)
+		}
+		r.log.V(1).Info("resource exists on API server but absent from label-filtered cache (managed labels may have been externally modified), restoring desired state", "name", resourceName)
+		common.RemoveObsoleteAnnotations(desired, resourceMetadata)
+		if err := r.UncachedClient.UpdateWithRetry(r.ctx, desired); err != nil {
+			return common.FromClientError(err, "failed to restore %s to desired state", resourceName)
+		}
+	}
 	return nil
 }

@@ -39,8 +39,8 @@ func (r *Reconciler) createOrApplyValidatingWebhookConfiguration(esc *operatorv1
 		}
 
 		if !exist {
-			if err := r.Create(r.ctx, desired); err != nil {
-				return common.FromClientError(err, "failed to create validatingWebhook resource %s", validatingWebhookName)
+			if err := r.createWithFallback(desired, resourceMetadata, validatingWebhookName); err != nil {
+				return err
 			}
 			r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "validatingWebhook resource %s created", validatingWebhookName)
 		}

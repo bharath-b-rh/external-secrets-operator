@@ -5,6 +5,7 @@ import (
 	"maps"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -57,9 +58,28 @@ func (r *Reconciler) ensureTrustedCABundleConfigMap(esc *operatorv1alpha1.Extern
 	}
 
 	if !exist {
-		// Create the ConfigMap
+		// NOTE: This ConfigMap cannot use the generic createWithFallback helper because
+		// the Data field is managed by CNO (not by this operator). A plain UpdateWithRetry
+		// with our empty-Data desired object would wipe the CA certificates CNO injected.
+		// Instead, on AlreadyExists we must fetch the real object first, preserve its Data,
+		// then update only labels/annotations.
 		if err := r.Create(r.ctx, desiredConfigMap); err != nil {
-			return common.FromClientError(err, "failed to create %s trusted CA bundle ConfigMap resource", configMapName)
+			if !apierrors.IsAlreadyExists(err) {
+				return common.FromClientError(err, "failed to create %s trusted CA bundle ConfigMap resource", configMapName)
+			}
+			r.log.V(1).Info("trusted CA bundle ConfigMap exists on API server but absent from label-filtered cache, restoring desired state", "name", configMapName)
+			actualConfigMap := &corev1.ConfigMap{}
+			if _, fetchErr := r.UncachedClient.Exists(r.ctx, client.ObjectKeyFromObject(desiredConfigMap), actualConfigMap); fetchErr != nil {
+				return common.FromClientError(fetchErr, "failed to fetch existing %s trusted CA bundle ConfigMap for restoration", configMapName)
+			}
+			desiredConfigMap.Data = actualConfigMap.Data
+			desiredConfigMap.BinaryData = actualConfigMap.BinaryData
+			common.RemoveObsoleteAnnotations(desiredConfigMap, resourceMetadata)
+			if updateErr := r.UncachedClient.UpdateWithRetry(r.ctx, desiredConfigMap); updateErr != nil {
+				return common.FromClientError(updateErr, "failed to restore %s trusted CA bundle ConfigMap to desired state", configMapName)
+			}
+			r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "trusted CA bundle ConfigMap resource %s restored to desired state", configMapName)
+			return nil
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "trusted CA bundle ConfigMap resource %s created", configMapName)
 		return nil
