@@ -93,4 +93,5 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-
+// Exclude old monolithic genproto to avoid ambiguous imports with modular versions
+exclude google.golang.org/genproto v0.0.0-20220519153652-3a47de7e79bd
