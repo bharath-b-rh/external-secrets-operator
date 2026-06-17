@@ -2,11 +2,14 @@ package external_secrets
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -213,11 +216,20 @@ func validateProxy(rawURL string) error {
 // When Create returns AlreadyExists, this method bypasses the stale cache by using the
 // uncached client to update the resource directly on the API server, restoring the managed
 // labels and annotations to the desired state.
-func (r *Reconciler) createWithFallback(desired client.Object, resourceMetadata common.ResourceMetadata, resourceName string) error {
-	gvk, gvkErr := apiutil.GVKForObject(desired, r.Scheme)
+//
+// It records a "created" event on success, or a "restored" event when the AlreadyExists
+// fallback path is taken.
+func (r *Reconciler) createWithFallback(desired client.Object, resourceMetadata common.ResourceMetadata, resourceName string, esc *operatorv1alpha1.ExternalSecretsConfig) error {
 	kind := desired.GetObjectKind().GroupVersionKind().Kind
-	if gvkErr == nil {
-		kind = gvk.Kind
+	if kind == "" {
+		gvk, gvkErr := apiutil.GVKForObject(desired, r.Scheme)
+		if gvkErr != nil {
+			r.log.V(5).Info("could not determine GVK, falling back to Go type name",
+				"type", fmt.Sprintf("%T", desired), "err", gvkErr)
+			kind = fmt.Sprintf("%T", desired)
+		} else {
+			kind = gvk.Kind
+		}
 	}
 
 	if err := r.Create(r.ctx, desired); err != nil {
@@ -231,6 +243,26 @@ func (r *Reconciler) createWithFallback(desired client.Object, resourceMetadata 
 		if err := r.UncachedClient.UpdateWithRetry(r.ctx, desired); err != nil {
 			return common.FromClientError(err, "failed to restore %s %s to desired state", kind, resourceName)
 		}
+		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "%s resource %s restored to desired state", kind, resourceName)
+		return nil
 	}
+	r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "%s resource %s created", kind, resourceName)
 	return nil
+}
+
+// patchResourceMetadata sends a MergePatch that sets only labels and annotations on the
+// object, leaving all other fields untouched. It also removes obsolete annotations before patching.
+func (r *Reconciler) patchResourceMetadata(desired client.Object, resourceMetadata common.ResourceMetadata) error {
+	common.RemoveObsoleteAnnotations(desired, resourceMetadata)
+	patch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"labels":      desired.GetLabels(),
+			"annotations": desired.GetAnnotations(),
+		},
+	}
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata patch: %w", err)
+	}
+	return r.CtrlClient.Patch(r.ctx, desired, client.RawPatch(types.MergePatchType, patchBytes))
 }

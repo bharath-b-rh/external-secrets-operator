@@ -267,47 +267,33 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	isManagedResource := func(object client.Object) bool {
-		return object.GetLabels() != nil && object.GetLabels()[requestEnqueueLabelKey] == requestEnqueueLabelValue
-	}
-
-	logIgnored := func(obj client.Object) {
-		r.log.V(4).Info("object not of interest, ignoring reconcile event", "object", fmt.Sprintf("%T", obj), "name", obj.GetName(), "namespace", obj.GetNamespace())
+		labels := object.GetLabels()
+		matches := labels != nil && labels[requestEnqueueLabelKey] == requestEnqueueLabelValue
+		r.log.V(4).Info("predicate evaluation", "object", fmt.Sprintf("%T", object), "name", object.GetName(), "namespace", object.GetNamespace(), "labels", labels, "matches", matches)
+		return matches
 	}
 
 	// On updates, check both old and new objects so that events where the managed
 	// label is removed externally still trigger reconciliation and label restoration.
 	managedResources := predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
-			if !isManagedResource(e.Object) {
-				logIgnored(e.Object)
-				return false
-			}
-			return true
+			return isManagedResource(e.Object)
 		},
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			if !isManagedResource(e.ObjectOld) && !isManagedResource(e.ObjectNew) {
-				logIgnored(e.ObjectNew)
-				return false
-			}
-			return true
+			return isManagedResource(e.ObjectOld) || isManagedResource(e.ObjectNew)
 		},
 		DeleteFunc: func(e event.DeleteEvent) bool {
-			if !isManagedResource(e.Object) {
-				logIgnored(e.Object)
-				return false
-			}
-			return true
+			return isManagedResource(e.Object)
 		},
 		GenericFunc: func(e event.GenericEvent) bool {
-			if !isManagedResource(e.Object) {
-				logIgnored(e.Object)
-				return false
-			}
-			return true
+			return isManagedResource(e.Object)
 		},
 	}
 
-	withIgnoreStatusUpdatePredicates := builder.WithPredicates(predicate.GenerationChangedPredicate{}, managedResources)
+	withIgnoreStatusUpdatePredicates := builder.WithPredicates(
+		predicate.Or(predicate.GenerationChangedPredicate{}, predicate.LabelChangedPredicate{}),
+		managedResources,
+	)
 	managedResourcePredicate := builder.WithPredicates(managedResources)
 
 	mgrBuilder := ctrl.NewControllerManagedBy(mgr).

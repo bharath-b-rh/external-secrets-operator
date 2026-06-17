@@ -1056,11 +1056,24 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 
 	})
 
-	Context("Managed Label Restoration", Label("Platform:Generic"), func() {
+	Context("Managed Label Restoration", Label("Platform:AWS"), func() {
 		const (
 			managedLabelKey   = "app"
 			managedLabelValue = "external-secrets"
 		)
+
+		AfterEach(func() {
+			By("Verifying ExternalSecretsConfig is Ready and not Degraded after label restoration")
+			Expect(utils.WaitForExternalSecretsConfigReady(ctx, dynamicClient, "cluster", 2*time.Minute)).To(Succeed(),
+				"ExternalSecretsConfig should remain Ready after label tampering and restoration")
+
+			By("Verifying operand pods are still ready after label restoration")
+			Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, operandNamespace, []string{
+				operandCoreControllerPodPrefix,
+				operandCertControllerPodPrefix,
+				operandWebhookPodPrefix,
+			})).To(Succeed(), "operand pods should still be running after label restoration")
+		})
 
 		It("should restore the app=external-secrets label on a ServiceAccount after external removal", func() {
 			saName := "external-secrets"
@@ -1093,7 +1106,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 		})
 
 		It("should restore the app=external-secrets label on a Role after external removal", func() {
-			roleName := "external-secrets"
+			roleName := "external-secrets-leaderelection"
 
 			By("Verifying Role has the managed label initially")
 			Eventually(func(g Gomega) {
@@ -1152,20 +1165,6 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
-		It("should keep ExternalSecretsConfig in Ready state after label restoration", func() {
-			By("Verifying ExternalSecretsConfig is Ready and not Degraded")
-			Expect(utils.WaitForExternalSecretsConfigReady(ctx, dynamicClient, "cluster", 2*time.Minute)).To(Succeed(),
-				"ExternalSecretsConfig should remain Ready after label tampering and restoration")
-		})
-
-		It("should keep operand pods running after label restoration", func() {
-			By("Verifying operand pods are still ready")
-			Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, operandNamespace, []string{
-				operandCoreControllerPodPrefix,
-				operandCertControllerPodPrefix,
-				operandWebhookPodPrefix,
-			})).To(Succeed(), "operand pods should still be running after label restoration")
-		})
 	})
 
 	AfterAll(func() {

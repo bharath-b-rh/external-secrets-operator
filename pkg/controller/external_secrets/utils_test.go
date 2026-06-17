@@ -7,6 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -21,10 +22,11 @@ func TestCreateWithFallback(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		preReq     func(cached *fakes.FakeCtrlClient, uncached *fakes.FakeCtrlClient)
-		wantErr    string
-		wantUpdate bool
+		name          string
+		preReq        func(cached *fakes.FakeCtrlClient, uncached *fakes.FakeCtrlClient)
+		customDesired func() client.Object
+		wantErr       string
+		wantUpdate    bool
 	}{
 		{
 			name: "resource created successfully",
@@ -40,6 +42,25 @@ func TestCreateWithFallback(t *testing.T) {
 				cached.CreateCalls(func(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
 					return commontest.ErrTestClient
 				})
+			},
+			wantErr: "failed to create ServiceAccount test-ns/test-sa: test client error",
+		},
+		{
+			name: "GVK resolved from object TypeMeta when pre-set, skipping scheme lookup",
+			preReq: func(cached *fakes.FakeCtrlClient, _ *fakes.FakeCtrlClient) {
+				cached.CreateCalls(func(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
+					return commontest.ErrTestClient
+				})
+			},
+			customDesired: func() client.Object {
+				return &corev1.ServiceAccount{
+					TypeMeta: metav1.TypeMeta{Kind: "ServiceAccount", APIVersion: "v1"},
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sa",
+						Namespace: "test-ns",
+						Labels:    controllerDefaultResourceLabels,
+					},
+				}
 			},
 			wantErr: "failed to create ServiceAccount test-ns/test-sa: test client error",
 		},
@@ -84,15 +105,20 @@ func TestCreateWithFallback(t *testing.T) {
 			r.CtrlClient = cached
 			r.UncachedClient = uncached
 
-			desired := &corev1.ServiceAccount{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-sa",
-					Namespace: "test-ns",
-					Labels:    controllerDefaultResourceLabels,
-				},
+			var desired client.Object
+			if tt.customDesired != nil {
+				desired = tt.customDesired()
+			} else {
+				desired = &corev1.ServiceAccount{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sa",
+						Namespace: "test-ns",
+						Labels:    controllerDefaultResourceLabels,
+					},
+				}
 			}
 
-			err := r.createWithFallback(desired, resourceMetadata, "test-ns/test-sa")
+			err := r.createWithFallback(desired, resourceMetadata, "test-ns/test-sa", commontest.TestExternalSecretsConfig())
 
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
@@ -109,5 +135,38 @@ func TestCreateWithFallback(t *testing.T) {
 				t.Error("expected no UncachedClient.UpdateWithRetry call, but one was made")
 			}
 		})
+	}
+}
+
+// TestCreateWithFallback_GVKResolutionFallback verifies that when the scheme has no
+// registered types, createWithFallback falls back to the Go type name in log and error messages.
+func TestCreateWithFallback_GVKResolutionFallback(t *testing.T) {
+	resourceMetadata := common.ResourceMetadata{
+		Labels: controllerDefaultResourceLabels,
+	}
+
+	r := testReconciler(t)
+	// Use an empty scheme so apiutil.GVKForObject cannot resolve the type.
+	r.Scheme = runtime.NewScheme()
+
+	cached := &fakes.FakeCtrlClient{}
+	cached.CreateCalls(func(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
+		return commontest.ErrTestClient
+	})
+	r.CtrlClient = cached
+	r.UncachedClient = &fakes.FakeCtrlClient{}
+
+	desired := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-sa",
+			Namespace: "test-ns",
+			Labels:    controllerDefaultResourceLabels,
+		},
+	}
+
+	err := r.createWithFallback(desired, resourceMetadata, "test-ns/test-sa", commontest.TestExternalSecretsConfig())
+	wantErr := "failed to create *v1.ServiceAccount test-ns/test-sa: test client error"
+	if err == nil || err.Error() != wantErr {
+		t.Errorf("createWithFallback() err = %v, wantErr = %v", err, wantErr)
 	}
 }

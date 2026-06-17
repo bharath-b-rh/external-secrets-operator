@@ -119,18 +119,17 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 			// When the managed label (app=external-secrets) is removed from the ConfigMap,
 			// the object falls out of the label-filtered cache. The cached Exists() returns
 			// false, Create() fails with AlreadyExists, and the controller must patch only
-			// the metadata (labels/annotations) via the uncached client, leaving
-			// CNO-managed Data/BinaryData untouched.
-			name:             "Create returns AlreadyExists (label-filtered cache miss): uncached client patches metadata",
+			// the metadata (labels/annotations), leaving CNO-managed Data/BinaryData untouched.
+			name:             "Create returns AlreadyExists (label-filtered cache miss): patches metadata to restore labels",
 			resourceMetadata: testResourceMetadata(commontest.TestExternalSecretsConfig()),
-			preReq: func(_ *Reconciler, cached *fakes.FakeCtrlClient, uncached *fakes.FakeCtrlClient) {
+			preReq: func(_ *Reconciler, cached *fakes.FakeCtrlClient, _ *fakes.FakeCtrlClient) {
 				cached.ExistsCalls(func(_ context.Context, _ types.NamespacedName, _ client.Object) (bool, error) {
 					return false, nil
 				})
 				cached.CreateCalls(func(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
 					return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, trustedCABundleConfigMapName)
 				})
-				uncached.PatchCalls(func(_ context.Context, obj client.Object, patch client.Patch, _ ...client.PatchOption) error {
+				cached.PatchCalls(func(_ context.Context, obj client.Object, patch client.Patch, _ ...client.PatchOption) error {
 					cm, ok := obj.(*corev1.ConfigMap)
 					if !ok {
 						t.Errorf("expected ConfigMap, got %T", obj)
@@ -178,16 +177,16 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 			wantErr: "failed to create external-secrets/external-secrets-trusted-ca-bundle trusted CA bundle ConfigMap resource: test client error",
 		},
 		{
-			name:             "uncached Patch fails after AlreadyExists from Create",
+			name:             "Patch fails after AlreadyExists from Create",
 			resourceMetadata: testResourceMetadata(commontest.TestExternalSecretsConfig()),
-			preReq: func(_ *Reconciler, cached *fakes.FakeCtrlClient, uncached *fakes.FakeCtrlClient) {
+			preReq: func(_ *Reconciler, cached *fakes.FakeCtrlClient, _ *fakes.FakeCtrlClient) {
 				cached.ExistsCalls(func(_ context.Context, _ types.NamespacedName, _ client.Object) (bool, error) {
 					return false, nil
 				})
 				cached.CreateCalls(func(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
 					return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, trustedCABundleConfigMapName)
 				})
-				uncached.PatchCalls(func(_ context.Context, _ client.Object, _ client.Patch, _ ...client.PatchOption) error {
+				cached.PatchCalls(func(_ context.Context, _ client.Object, _ client.Patch, _ ...client.PatchOption) error {
 					return commontest.ErrTestClient
 				})
 			},
@@ -249,10 +248,10 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 			if tt.wantCreate && cached.CreateCallCount() == 0 {
 				t.Error("expected Create to be called, but it wasn't")
 			}
-			if tt.wantPatch && cached.PatchCallCount() == 0 && uncached.PatchCallCount() == 0 {
-				t.Error("expected Patch to be called (on cached or uncached client), but it wasn't")
+			if tt.wantPatch && cached.PatchCallCount() == 0 {
+				t.Error("expected Patch to be called, but it wasn't")
 			}
-			if !tt.wantPatch && (cached.PatchCallCount() > 0 || uncached.PatchCallCount() > 0) {
+			if !tt.wantPatch && cached.PatchCallCount() > 0 {
 				t.Error("expected no Patch call, but one was made")
 			}
 		})

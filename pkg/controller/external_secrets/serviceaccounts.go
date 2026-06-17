@@ -69,10 +69,9 @@ func (r *Reconciler) createOrApplyServiceAccounts(esc *operatorv1alpha1.External
 		}
 
 		if !exist {
-			if err := r.createWithFallback(desired, resourceMetadata, serviceAccountName); err != nil {
+			if err := r.createWithFallback(desired, resourceMetadata, serviceAccountName, esc); err != nil {
 				return err
 			}
-			r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "Created serviceaccount %s", serviceAccountName)
 		}
 	}
 
