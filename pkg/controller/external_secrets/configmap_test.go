@@ -104,8 +104,8 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 					if cm.Labels[trustedCABundleInjectLabel] != "true" {
 						t.Errorf("expected inject label in patch target, got %q", cm.Labels[trustedCABundleInjectLabel])
 					}
-					if patch.Type() != types.MergePatchType {
-						t.Errorf("expected MergePatch, got %s", patch.Type())
+					if patch.Type() != types.JSONPatchType {
+						t.Errorf("expected JSONPatch, got %s", patch.Type())
 					}
 					return nil
 				})
@@ -140,8 +140,8 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 					if cm.Labels[trustedCABundleInjectLabel] != "true" {
 						t.Errorf("expected inject label in patch target, got %q", cm.Labels[trustedCABundleInjectLabel])
 					}
-					if patch.Type() != types.MergePatchType {
-						t.Errorf("expected MergePatch, got %s", patch.Type())
+					if patch.Type() != types.JSONPatchType {
+						t.Errorf("expected JSONPatch, got %s", patch.Type())
 					}
 					return nil
 				})

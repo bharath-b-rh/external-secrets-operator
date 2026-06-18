@@ -250,19 +250,42 @@ func (r *Reconciler) createWithFallback(desired client.Object, resourceMetadata 
 	return nil
 }
 
-// patchResourceMetadata sends a MergePatch that sets only labels and annotations on the
-// object, leaving all other fields untouched. It also removes obsolete annotations before patching.
+// jsonPatchOp is a single JSON Patch operation.
+type jsonPatchOp struct {
+	Op    string      `json:"op"`
+	Path  string      `json:"path"`
+	Value interface{} `json:"value"`
+}
+
+// patchResourceMetadata fully replaces the labels and annotations on an object using a
+// JSON Patch, leaving all other fields untouched. This is safe for co-managed
+// resources where this operator owns all metadata but data fields are owned by an external
+// controller (e.g. CNO-managed ConfigMap data, cert-controller-managed TLS Secret data).
+//
+// JSON Patch "add" on an existing path replaces the entire value, so the resulting
+// labels/annotations on the server exactly match desired.
+//
+// RemoveObsoleteAnnotations is called defensively to strip any deleted annotation keys
+// from desired before building the patch, regardless of whether the caller already did so.
 func (r *Reconciler) patchResourceMetadata(desired client.Object, resourceMetadata common.ResourceMetadata) error {
 	common.RemoveObsoleteAnnotations(desired, resourceMetadata)
-	patch := map[string]interface{}{
-		"metadata": map[string]interface{}{
-			"labels":      desired.GetLabels(),
-			"annotations": desired.GetAnnotations(),
-		},
+
+	annotations := desired.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
 	}
-	patchBytes, err := json.Marshal(patch)
+	labels := desired.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+
+	ops := []jsonPatchOp{
+		{Op: "add", Path: "/metadata/labels", Value: labels},
+		{Op: "add", Path: "/metadata/annotations", Value: annotations},
+	}
+	patchBytes, err := json.Marshal(ops)
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata patch: %w", err)
 	}
-	return r.CtrlClient.Patch(r.ctx, desired, client.RawPatch(types.MergePatchType, patchBytes))
+	return r.CtrlClient.Patch(r.ctx, desired, client.RawPatch(types.JSONPatchType, patchBytes))
 }

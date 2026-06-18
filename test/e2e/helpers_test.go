@@ -155,6 +155,36 @@ func getResourceTypesToVerify() []resourceType {
 				return objects, nil
 			},
 		},
+		{
+			// ClusterRoles are cluster-scoped; the namespace parameter is unused.
+			name: "ClusterRole",
+			listFunc: func(ctx context.Context, clientset *kubernetes.Clientset, _ string, g Gomega) ([]metav1.Object, error) {
+				clusterRoles, err := clientset.RbacV1().ClusterRoles().List(ctx, listOnlyManagedResources)
+				if err != nil {
+					return nil, err
+				}
+				objects := make([]metav1.Object, 0, len(clusterRoles.Items))
+				for i := range clusterRoles.Items {
+					objects = append(objects, &clusterRoles.Items[i])
+				}
+				return objects, nil
+			},
+		},
+		{
+			// ClusterRoleBindings are cluster-scoped; the namespace parameter is unused.
+			name: "ClusterRoleBinding",
+			listFunc: func(ctx context.Context, clientset *kubernetes.Clientset, _ string, g Gomega) ([]metav1.Object, error) {
+				crbs, err := clientset.RbacV1().ClusterRoleBindings().List(ctx, listOnlyManagedResources)
+				if err != nil {
+					return nil, err
+				}
+				objects := make([]metav1.Object, 0, len(crbs.Items))
+				for i := range crbs.Items {
+					objects = append(objects, &crbs.Items[i])
+				}
+				return objects, nil
+			},
+		},
 	}
 }
 
