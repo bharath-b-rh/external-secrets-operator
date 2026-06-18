@@ -423,7 +423,7 @@ func TestCreateOrApplyDeployments(t *testing.T) {
 			updateExternalSecretsConfig: func(i *v1alpha1.ExternalSecretsConfig) {
 				i.Spec.ApplicationConfig.NodeSelector = map[string]string{"node/Label/2": "value2"}
 			},
-			wantErr: `failed to update node selector: spec.nodeSelector: Invalid value: "node/Label/2": a qualified name must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character (e.g. 'MyName',  or 'my.name',  or '123-abc', regex used for validation is '([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]') with an optional DNS subdomain prefix and '/' (e.g. 'example.com/MyName')`,
+			wantErr: `failed to update node selector: spec.nodeSelector: Invalid value: "node/Label/2": a valid label key must consist of alphanumeric characters, '-', '_' or '.', and must start and end with an alphanumeric character (e.g. 'MyName',  or 'my.name',  or '123-abc', regex used for validation is '([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]') with an optional DNS subdomain prefix and '/' (e.g. 'example.com/MyName')`,
 		},
 		{
 			name: "deployment reconciliation with invalid affinity configuration",

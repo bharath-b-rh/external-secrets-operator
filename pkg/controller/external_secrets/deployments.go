@@ -317,7 +317,7 @@ func validateAffinityRules(affinity *corev1.Affinity, fldPath *field.Path) error
 func validateTolerationsConfig(tolerations []corev1.Toleration, fldPath *field.Path) error {
 	// convert corev1.Tolerations to core.Tolerations, required for validation.
 	convTolerations := *(*[]core.Toleration)(unsafe.Pointer(&tolerations))
-	return corevalidation.ValidateTolerations(convTolerations, fldPath.Child("tolerations")).ToAggregate()
+	return corevalidation.ValidateTolerations(convTolerations, fldPath.Child("tolerations"), corevalidation.PodValidationOptions{}).ToAggregate()
 }
 
 func (r *Reconciler) updateImageInStatus(esc *operatorv1alpha1.ExternalSecretsConfig) error {
