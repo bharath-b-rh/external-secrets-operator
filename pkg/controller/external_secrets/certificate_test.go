@@ -268,7 +268,7 @@ func TestCreateOrApplyCertificates(t *testing.T) {
 				esc.Spec.ControllerConfig.CertProvider.CertManager.IssuerRef.Name = testIssuerName
 			},
 			recon:   false,
-			wantErr: fmt.Sprintf("failed to create %s/%s certificate resource: %s", commontest.TestExternalSecretsNamespace, testValidateCertificateResourceName, commontest.ErrTestClient),
+			wantErr: fmt.Sprintf("failed to create Certificate %s/%s: %s", commontest.TestExternalSecretsNamespace, testValidateCertificateResourceName, commontest.ErrTestClient),
 		},
 		{
 			name: "successful webhook certificate creation",

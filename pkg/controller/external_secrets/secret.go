@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
@@ -33,10 +34,9 @@ func (r *Reconciler) createOrApplySecret(esc *operatorv1alpha1.ExternalSecretsCo
 	}
 
 	if exist && common.ObjectMetadataModified(desired, fetched, &resourceMetadata) {
-		r.log.V(1).Info("secret has been modified, updating to desired state", "name", secretName)
-		common.RemoveObsoleteAnnotations(desired, resourceMetadata)
-		if err := r.UpdateWithRetry(r.ctx, desired); err != nil {
-			return common.FromClientError(err, "failed to update %s secret resource", secretName)
+		r.log.V(1).Info("secret has been modified, patching metadata to desired state", "name", secretName)
+		if err := r.patchResourceMetadata(desired, resourceMetadata); err != nil {
+			return common.FromClientError(err, "failed to patch %s secret resource metadata", secretName)
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "secret resource %s reconciled back to desired state", secretName)
 	} else {
@@ -44,8 +44,20 @@ func (r *Reconciler) createOrApplySecret(esc *operatorv1alpha1.ExternalSecretsCo
 	}
 
 	if !exist {
+		// NOTE: This Secret cannot use the generic createWithFallback helper because
+		// its Data field is managed by the external-secrets cert-controller, which injects
+		// TLS content at runtime. On AlreadyExists we use a MergePatch that touches only
+		// metadata, leaving cert-controller-managed TLS certificates untouched.
 		if err := r.Create(r.ctx, desired); err != nil {
-			return common.FromClientError(err, "failed to create %s secret resource", secretName)
+			if !apierrors.IsAlreadyExists(err) {
+				return common.FromClientError(err, "failed to create %s secret resource", secretName)
+			}
+			r.log.V(1).Info("secret exists on API server but absent from label-filtered cache, patching metadata", "name", secretName)
+			if patchErr := r.patchResourceMetadata(desired, resourceMetadata); patchErr != nil {
+				return common.FromClientError(patchErr, "failed to patch %s secret resource metadata", secretName)
+			}
+			r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "secret resource %s restored to desired state", secretName)
+			return nil
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "secret resource %s created", secretName)
 	}

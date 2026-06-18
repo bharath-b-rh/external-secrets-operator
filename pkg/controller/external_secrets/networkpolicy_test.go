@@ -146,7 +146,7 @@ func TestCreateOrApplyStaticNetworkPolicies(t *testing.T) {
 					return nil
 				})
 			},
-			wantErr: "failed to create network policy external-secrets/eso-sys-deny-all-traffic: test client error",
+			wantErr: "failed to create NetworkPolicy external-secrets/eso-sys-deny-all-traffic: test client error",
 		},
 		{
 			name: "network policy exists check fails",
@@ -344,7 +344,7 @@ func TestCreateOrApplyCustomNetworkPolicies(t *testing.T) {
 					},
 				}
 			},
-			wantErr: "failed to create network policy external-secrets/eso-user-test-fail-policy: test client error",
+			wantErr: "failed to create NetworkPolicy external-secrets/eso-user-test-fail-policy: test client error",
 		},
 		{
 			name: "custom network policy updated successfully",
