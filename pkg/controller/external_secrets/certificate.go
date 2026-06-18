@@ -169,13 +169,6 @@ func (r *Reconciler) assertIssuerRefExists(issueRef v1.ObjectReference, namespac
 				issueRef.Kind, namespace,
 			)
 		}
-		if apierrors.IsNotFound(err) {
-			return common.NewUserConfigurationError(
-				err,
-				"issuer %q of kind %q not found in %s",
-				issueRef.Name, issueRef.Kind, namespace,
-			)
-		}
 		if clientErr := common.FromClientError(err, "failed to fetch issuer %q", issueRef.Name); clientErr != nil {
 			return clientErr
 		}

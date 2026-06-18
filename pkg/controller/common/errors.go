@@ -136,8 +136,8 @@ func (e *ReconcileError) Unwrap() error {
 
 // FromClientError creates a ReconcileError from a Kubernetes API client error.
 // It automatically determines the error reason based on the API error type:
-//   - IrrecoverableError: Unauthorized, Forbidden, Invalid, BadRequest, ServiceUnavailable
-//   - RetryRequiredError: All other errors (e.g., NotFound, Conflict, Timeout)
+//   - IrrecoverableError: Unauthorized, Forbidden, Invalid, BadRequest
+//   - RetryRequiredError: All other errors (e.g., NotFound, Conflict, Timeout, ServiceUnavailable)
 //
 // Returns nil if the provided error is nil.
 // The message supports fmt.Sprintf-style formatting with the provided args.

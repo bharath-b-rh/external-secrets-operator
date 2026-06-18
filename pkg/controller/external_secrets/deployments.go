@@ -755,11 +755,11 @@ func mergeEnvVars(container *corev1.Container, overrideEnv []corev1.EnvVar) {
 func getComponentNameFromAsset(assetName string) (operatorv1alpha1.ComponentName, string, error) {
 	switch assetName {
 	case controllerDeploymentAssetName:
-		return operatorv1alpha1.CoreController, controllerContainerName, nil
+		return operatorv1alpha1.CoreController, OperandCoreControllerContainer, nil
 	case webhookDeploymentAssetName:
-		return operatorv1alpha1.Webhook, webhookContainerName, nil
+		return operatorv1alpha1.Webhook, OperandWebhookContainer, nil
 	case certControllerDeploymentAssetName:
-		return operatorv1alpha1.CertController, certControllerContainerName, nil
+		return operatorv1alpha1.CertController, OperandCertControllerContainer, nil
 	case bitwardenDeploymentAssetName:
 		return operatorv1alpha1.BitwardenSDKServer, bitwardenContainerName, nil
 	default:
@@ -776,10 +776,11 @@ func (r *Reconciler) updateOptionalFeatures(containerArgs *[]string, supportedFe
 			r.log.V(4).Info("feature not active", "feature", featureName)
 			continue
 		}
-
-		switch featureName {
-		case operatorv1alpha1.UnsafeAllowGenericTargets:
-			*containerArgs = append(*containerArgs, UnsafeAllowGenericTargetsArg)
+		arg, ok := featureContainerArgs[featureName]
+		if !ok {
+			r.log.V(2).Info("feature enabled but no arg mapping for deployment", "feature", featureName)
+			continue
 		}
+		*containerArgs = append(*containerArgs, arg)
 	}
 }

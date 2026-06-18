@@ -95,6 +95,9 @@ func validateContainerHasArg(containerName, arg string) func(*testing.T, *appsv1
 	return func(t *testing.T, deployment *appsv1.Deployment) {
 		t.Helper()
 		args := containerArgs(deployment, containerName)
+		if args == nil {
+			t.Fatalf("container %q not found in deployment", containerName)
+		}
 		if !slices.Contains(args, arg) {
 			t.Errorf("container %q args = %v, want to contain %q", containerName, args, arg)
 		}
@@ -105,6 +108,9 @@ func validateContainerMissingArg(containerName, arg string) func(*testing.T, *ap
 	return func(t *testing.T, deployment *appsv1.Deployment) {
 		t.Helper()
 		args := containerArgs(deployment, containerName)
+		if args == nil {
+			t.Fatalf("container %q not found in deployment", containerName)
+		}
 		if slices.Contains(args, arg) {
 			t.Errorf("container %q args = %v, should not contain %q", containerName, args, arg)
 		}

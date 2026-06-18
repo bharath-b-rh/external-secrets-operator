@@ -520,8 +520,9 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 				g.Expect(err).NotTo(HaveOccurred(), "should get external-secrets deployment")
 				g.Expect(deployment.Spec.RevisionHistoryLimit).NotTo(BeNil(), "revisionHistoryLimit should be set")
 				g.Expect(*deployment.Spec.RevisionHistoryLimit).To(Equal(int32(10)), "revisionHistoryLimit should default to 10 when not configured")
-				g.Expect(deploymentContainerHasArg(deployment, externalsecrets.OperandCoreControllerContainer, externalsecrets.UnsafeAllowGenericTargetsArg)).To(BeFalse(),
-					"unsafe-allow-generic-targets should not be set when the feature is not configured")
+				hasArg, found := deploymentContainerHasArg(deployment, externalsecrets.OperandCoreControllerContainer, externalsecrets.UnsafeAllowGenericTargetsArg)
+				g.Expect(found).To(BeTrue(), "core controller container should exist")
+				g.Expect(hasArg).To(BeFalse(), "unsafe-allow-generic-targets should not be set when the feature is not configured")
 			}, time.Minute, 5*time.Second).Should(Succeed())
 
 			By("Verifying default revisionHistoryLimit (10) for Webhook deployment")
@@ -627,12 +628,12 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			Eventually(func(g Gomega) {
 				deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, externalsecrets.OperandCoreControllerDeployment, metav1.GetOptions{})
 				g.Expect(err).NotTo(HaveOccurred(), "should get external-secrets deployment")
+				hasArg, found := deploymentContainerHasArg(deployment, externalsecrets.OperandCoreControllerContainer, externalsecrets.UnsafeAllowGenericTargetsArg)
+				g.Expect(found).To(BeTrue(), "core controller container should exist")
 				if present {
-					g.Expect(deploymentContainerHasArg(deployment, externalsecrets.OperandCoreControllerContainer, externalsecrets.UnsafeAllowGenericTargetsArg)).To(BeTrue(),
-						"core controller deployment should include %q", externalsecrets.UnsafeAllowGenericTargetsArg)
+					g.Expect(hasArg).To(BeTrue(), "core controller deployment should include %q", externalsecrets.UnsafeAllowGenericTargetsArg)
 				} else {
-					g.Expect(deploymentContainerHasArg(deployment, externalsecrets.OperandCoreControllerContainer, externalsecrets.UnsafeAllowGenericTargetsArg)).To(BeFalse(),
-						"core controller deployment should not include %q", externalsecrets.UnsafeAllowGenericTargetsArg)
+					g.Expect(hasArg).To(BeFalse(), "core controller deployment should not include %q", externalsecrets.UnsafeAllowGenericTargetsArg)
 				}
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		}
@@ -667,7 +668,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 				operandCoreControllerPodPrefix,
 				operandCertControllerPodPrefix,
 				operandWebhookPodPrefix,
-			})).To(Succeed())
+			})).To(Succeed(), "operand pods should be ready after restoring ExternalSecretsManager features")
 		})
 
 		It("should add unsafe-allow-generic-targets arg to the core controller when feature is enabled", func() {
@@ -679,7 +680,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 				operandCoreControllerPodPrefix,
 				operandCertControllerPodPrefix,
 				operandWebhookPodPrefix,
-			})).To(Succeed())
+			})).To(Succeed(), "operand pods should be ready after enabling UnsafeAllowGenericTargets")
 
 			By("Verifying the core controller deployment includes the feature arg")
 			waitForCoreControllerArg(true)
@@ -694,7 +695,9 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			} {
 				deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, tc.deploymentName, metav1.GetOptions{})
 				Expect(err).NotTo(HaveOccurred(), "should get %s deployment", tc.deploymentName)
-				Expect(deploymentContainerHasArg(deployment, tc.containerName, externalsecrets.UnsafeAllowGenericTargetsArg)).To(BeFalse(),
+				hasArg, found := deploymentContainerHasArg(deployment, tc.containerName, externalsecrets.UnsafeAllowGenericTargetsArg)
+				Expect(found).To(BeTrue(), "%s container %q should exist", tc.deploymentName, tc.containerName)
+				Expect(hasArg).To(BeFalse(),
 					"%s deployment should not include %q", tc.deploymentName, externalsecrets.UnsafeAllowGenericTargetsArg)
 			}
 		})
@@ -708,7 +711,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 				operandCoreControllerPodPrefix,
 				operandCertControllerPodPrefix,
 				operandWebhookPodPrefix,
-			})).To(Succeed())
+			})).To(Succeed(), "operand pods should be ready after disabling UnsafeAllowGenericTargets")
 
 			By("Verifying the core controller deployment no longer includes the feature arg")
 			waitForCoreControllerArg(false)
@@ -723,7 +726,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 				operandCoreControllerPodPrefix,
 				operandCertControllerPodPrefix,
 				operandWebhookPodPrefix,
-			})).To(Succeed())
+			})).To(Succeed(), "operand pods should be ready after clearing ExternalSecretsManager features")
 
 			By("Verifying the core controller deployment no longer includes the feature arg")
 			waitForCoreControllerArg(false)

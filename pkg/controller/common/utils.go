@@ -1,12 +1,14 @@
 package common
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -472,50 +474,41 @@ func containerSpecModified(desiredContainer, fetchedContainer *corev1.Container)
 	return false
 }
 
-func envVarsEqual(desired, fetched []corev1.EnvVar) bool {
-	if len(desired) == 0 && len(fetched) == 0 {
-		return true
-	}
+// slicesEqualUnordered reports whether desired and fetched contain the same elements.
+// less defines a strict ordering used to sort copies before comparing with reflect.DeepEqual.
+func slicesEqualUnordered[T any](desired, fetched []T, less func(a, b T) int) bool {
 	if len(desired) != len(fetched) {
 		return false
 	}
-
-	fetchedMap := make(map[string]corev1.EnvVar, len(fetched))
-	for _, env := range fetched {
-		fetchedMap[env.Name] = env
+	if len(desired) == 0 {
+		return true
 	}
 
-	for _, desiredEnv := range desired {
-		fetchedEnv, exists := fetchedMap[desiredEnv.Name]
-		if !exists || !reflect.DeepEqual(desiredEnv, fetchedEnv) {
-			return false
-		}
-	}
-
-	return true
+	desiredSorted := slices.Clone(desired)
+	fetchedSorted := slices.Clone(fetched)
+	slices.SortFunc(desiredSorted, less)
+	slices.SortFunc(fetchedSorted, less)
+	return reflect.DeepEqual(desiredSorted, fetchedSorted)
 }
 
+func envVarLess(a, b corev1.EnvVar) int {
+	return cmp.Compare(a.Name, b.Name)
+}
+
+func volumeMountLess(a, b corev1.VolumeMount) int {
+	return cmp.Compare(a.Name, b.Name)
+}
+
+// envVarsEqual reports whether two env var slices are semantically equal.
+// Comparison is order-insensitive; copies are sorted before reflect.DeepEqual.
+func envVarsEqual(desired, fetched []corev1.EnvVar) bool {
+	return slicesEqualUnordered(desired, fetched, envVarLess)
+}
+
+// volumeMountsEqual reports whether two volume mount slices are semantically equal.
+// Comparison is order-insensitive; copies are sorted before reflect.DeepEqual.
 func volumeMountsEqual(desired, fetched []corev1.VolumeMount) bool {
-	if len(desired) == 0 && len(fetched) == 0 {
-		return true
-	}
-	if len(desired) != len(fetched) {
-		return false
-	}
-
-	fetchedMap := make(map[string]corev1.VolumeMount, len(fetched))
-	for _, mount := range fetched {
-		fetchedMap[mount.Name] = mount
-	}
-
-	for _, desiredMount := range desired {
-		fetchedMount, exists := fetchedMap[desiredMount.Name]
-		if !exists || !reflect.DeepEqual(desiredMount, fetchedMount) {
-			return false
-		}
-	}
-
-	return true
+	return slicesEqualUnordered(desired, fetched, volumeMountLess)
 }
 
 func volumesEqual(desired, fetched []corev1.Volume) bool {

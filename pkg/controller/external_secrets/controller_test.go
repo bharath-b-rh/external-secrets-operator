@@ -80,7 +80,12 @@ func TestDeploymentFailureConditions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			degraded, ready := deploymentFailureConditions(observedGeneration, tt.reconcileErr)
+			degraded, ready := deploymentFailureConditions(
+				observedGeneration,
+				tt.reconcileErr,
+				common.IsIrrecoverableError(tt.reconcileErr),
+				common.IsUserConfigurationError(tt.reconcileErr),
+			)
 
 			if degraded.ObservedGeneration != observedGeneration {
 				t.Fatalf("degraded ObservedGeneration = %d, want %d", degraded.ObservedGeneration, observedGeneration)

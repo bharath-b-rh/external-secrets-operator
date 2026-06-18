@@ -296,8 +296,21 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 	}
 
-	// Watch ExternalSecretsManager
-	mgrBuilder.Watches(&operatorv1alpha1.ExternalSecretsManager{}, handler.EnqueueRequestsFromMapFunc(mapFunc), withIgnoreStatusUpdatePredicates)
+	// Watch ExternalSecretsManager spec changes (features, globalConfig). ESM is not
+	// labeled app=external-secrets, so it must not use the managedResources predicate.
+	mgrBuilder.Watches(
+		&operatorv1alpha1.ExternalSecretsManager{},
+		handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+			if _, ok := obj.(*operatorv1alpha1.ExternalSecretsManager); !ok {
+				return nil
+			}
+			r.log.V(4).Info("received ExternalSecretsManager reconcile event", "name", obj.GetName())
+			return []reconcile.Request{{
+				NamespacedName: types.NamespacedName{Name: common.ExternalSecretsConfigObjectName},
+			}}
+		}),
+		builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+	)
 
 	// Conditionally watch Certificate if cert-manager is installed
 	// Note: Certificate is already declared in buildCacheObjectList(), this just sets up the watch
@@ -416,7 +429,7 @@ func (r *Reconciler) reconcileDeploymentFailureResult(
 	isFatal := common.IsIrrecoverableError(reconcileErr)
 	isUserConfig := common.IsUserConfigurationError(reconcileErr)
 
-	degradedCond, readyCond := deploymentFailureConditions(observedGeneration, reconcileErr)
+	degradedCond, readyCond := deploymentFailureConditions(observedGeneration, reconcileErr, isFatal, isUserConfig)
 
 	errUpdate := r.updateStatusConditionsOnFailure(esc, degradedCond, readyCond, isFatal, reconcileErr)
 
@@ -435,10 +448,8 @@ func (r *Reconciler) reconcileDeploymentFailureResult(
 func deploymentFailureConditions(
 	observedGeneration int64,
 	reconcileErr error,
+	isFatal, isUserConfig bool,
 ) (degradedCond, readyCond metav1.Condition) {
-	isFatal := common.IsIrrecoverableError(reconcileErr)
-	isUserConfig := common.IsUserConfigurationError(reconcileErr)
-
 	degradedCond = metav1.Condition{
 		Type:               operatorv1alpha1.Degraded,
 		ObservedGeneration: observedGeneration,

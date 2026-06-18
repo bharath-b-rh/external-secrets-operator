@@ -6,6 +6,7 @@ import (
 
 	certmanagerapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager"
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
 	"github.com/openshift/external-secrets-operator/pkg/controller/common"
 )
 
@@ -94,10 +95,7 @@ const (
 	noProxyEnvVarLowercase    = "no_proxy"
 
 	// specific containers when applying OverrideEnv configurations.
-	controllerContainerName     = "external-secrets"
-	webhookContainerName        = "webhook"
-	certControllerContainerName = "cert-controller"
-	bitwardenContainerName      = "bitwarden-sdk-server"
+	bitwardenContainerName = "bitwarden-sdk-server"
 
 	// systemNetworkPolicyPrefix is prepended to all operator-managed static network policy names.
 	systemNetworkPolicyPrefix = "eso-sys-"
@@ -129,6 +127,14 @@ var (
 		"app.kubernetes.io/version":    os.Getenv(externalsecretsImageVersionEnvVarName),
 		"app.kubernetes.io/managed-by": common.ExternalSecretsOperatorCommonName,
 		"app.kubernetes.io/part-of":    common.ExternalSecretsOperatorCommonName,
+	}
+
+	// featureContainerArgs maps ExternalSecretsManager feature names to the container
+	// argument appended when that feature is enabled and the deployment declares support
+	// via updateOptionalFeatures. Only features listed in both ESM (enabled) and the
+	// deployment's supportedFeatures slice are applied.
+	featureContainerArgs = map[operatorv1alpha1.FeatureName]string{
+		operatorv1alpha1.UnsafeAllowGenericTargets: UnsafeAllowGenericTargetsArg,
 	}
 )
 

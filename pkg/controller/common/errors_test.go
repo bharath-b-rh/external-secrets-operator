@@ -234,7 +234,7 @@ func TestFromClientError(t *testing.T) {
 		{
 			name:       "ServiceUnavailable",
 			err:        apierrors.NewServiceUnavailable("service unavailable"),
-			wantReason: IrrecoverableError,
+			wantReason: RetryRequiredError,
 		},
 		{
 			name:       "Conflict",
