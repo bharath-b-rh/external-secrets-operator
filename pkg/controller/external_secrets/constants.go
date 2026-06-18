@@ -16,6 +16,23 @@ const (
 	// ControllerName is the name of the controller used in logs and events.
 	ControllerName = externalsecretsCommonName + "-controller"
 
+	// OperandCoreControllerDeployment is the core external-secrets controller Deployment name.
+	OperandCoreControllerDeployment = externalsecretsCommonName
+	// OperandWebhookDeployment is the external-secrets webhook Deployment name.
+	OperandWebhookDeployment = externalsecretsCommonName + "-webhook"
+	// OperandCertControllerDeployment is the in-tree cert-controller Deployment name.
+	OperandCertControllerDeployment = externalsecretsCommonName + "-cert-controller"
+
+	// OperandCoreControllerContainer is the core controller container name.
+	OperandCoreControllerContainer = externalsecretsCommonName
+	// OperandWebhookContainer is the webhook container name.
+	OperandWebhookContainer = "webhook"
+	// OperandCertControllerContainer is the cert-controller container name.
+	OperandCertControllerContainer = "cert-controller"
+
+	// UnsafeAllowGenericTargetsArg is the core controller argument that enables generic target support.
+	UnsafeAllowGenericTargetsArg = "--unsafe-allow-generic-targets=true"
+
 	// finalizer name for externalsecretsconfigs.operator.openshift.io resource.
 	finalizer = "externalsecretsconfigs.operator.openshift.io/" + ControllerName
 

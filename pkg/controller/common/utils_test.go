@@ -484,3 +484,47 @@ func TestDeploymentObjectChanged(t *testing.T) {
 		}
 	})
 }
+
+func TestIsFeatureEnabled(t *testing.T) {
+	enabledESM := &operatorv1alpha1.ExternalSecretsManager{
+		Spec: operatorv1alpha1.ExternalSecretsManagerSpec{
+			Features: []operatorv1alpha1.Feature{
+				{Name: operatorv1alpha1.UnsafeAllowGenericTargets, Mode: operatorv1alpha1.Enabled},
+			},
+		},
+	}
+	disabledESM := &operatorv1alpha1.ExternalSecretsManager{
+		Spec: operatorv1alpha1.ExternalSecretsManagerSpec{
+			Features: []operatorv1alpha1.Feature{
+				{Name: operatorv1alpha1.UnsafeAllowGenericTargets, Mode: operatorv1alpha1.Disabled},
+			},
+		},
+	}
+	defaultModeESM := &operatorv1alpha1.ExternalSecretsManager{
+		Spec: operatorv1alpha1.ExternalSecretsManagerSpec{
+			Features: []operatorv1alpha1.Feature{
+				{Name: operatorv1alpha1.UnsafeAllowGenericTargets},
+			},
+		},
+	}
+
+	tests := []struct {
+		name string
+		esm  *operatorv1alpha1.ExternalSecretsManager
+		want bool
+	}{
+		{name: "nil esm returns false", esm: nil, want: false},
+		{name: "missing feature returns false", esm: &operatorv1alpha1.ExternalSecretsManager{}, want: false},
+		{name: "enabled feature", esm: enabledESM, want: true},
+		{name: "disabled feature", esm: disabledESM, want: false},
+		{name: "omitted mode defaults to false", esm: defaultModeESM, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsFeatureEnabled(tt.esm, operatorv1alpha1.UnsafeAllowGenericTargets); got != tt.want {
+				t.Errorf("IsFeatureEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

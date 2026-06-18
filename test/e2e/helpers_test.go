@@ -20,6 +20,7 @@ limitations under the License.
 
 import (
 	"context"
+	"slices"
 
 	. "github.com/onsi/gomega"
 
@@ -161,4 +162,22 @@ func getResourceTypesToVerify() []resourceType {
 // asDeployment safely casts a metav1.Object to an appsv1.Deployment
 func asDeployment(obj metav1.Object) *appsv1.Deployment {
 	return obj.(*appsv1.Deployment)
+}
+
+// getDeploymentContainerArgs returns container args for the named container in a deployment.
+func getDeploymentContainerArgs(deployment *appsv1.Deployment, containerName string) []string {
+	if deployment == nil {
+		return nil
+	}
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		if container.Name == containerName {
+			return container.Args
+		}
+	}
+	return nil
+}
+
+// deploymentContainerHasArg reports whether the named container has the given arg.
+func deploymentContainerHasArg(deployment *appsv1.Deployment, containerName, arg string) bool {
+	return slices.Contains(getDeploymentContainerArgs(deployment, containerName), arg)
 }

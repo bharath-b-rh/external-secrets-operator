@@ -629,6 +629,23 @@ func EvalMode(val operatorv1alpha1.Mode) bool {
 	return val == operatorv1alpha1.Enabled
 }
 
+// IsFeatureEnabled reports whether the named feature is active on the ExternalSecretsManager.
+// When the feature is absent, esm is nil, or mode is not Enabled, false is returned.
+func IsFeatureEnabled(esm *operatorv1alpha1.ExternalSecretsManager, name operatorv1alpha1.FeatureName) bool {
+	if esm == nil {
+		return false
+	}
+
+	for _, feature := range esm.Spec.Features {
+		if feature.Name != name {
+			continue
+		}
+		return EvalMode(feature.Mode)
+	}
+
+	return false
+}
+
 // IsESMSpecEmpty returns whether ExternalSecretsManager CR Spec is empty.
 func IsESMSpecEmpty(esm *operatorv1alpha1.ExternalSecretsManager) bool {
 	return esm != nil && !reflect.DeepEqual(esm.Spec, operatorv1alpha1.ExternalSecretsManagerSpec{})

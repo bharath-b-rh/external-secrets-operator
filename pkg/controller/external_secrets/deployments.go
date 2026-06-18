@@ -118,7 +118,7 @@ func (r *Reconciler) getDeploymentObject(assetName string, esc *operatorv1alpha1
 
 	switch assetName {
 	case controllerDeploymentAssetName:
-		updateContainerSpec(deployment, esc, image, logLevel)
+		r.updateContainerSpec(deployment, esc, image, logLevel)
 	case webhookDeploymentAssetName:
 		checkInterval := "5m"
 		if esc.Spec.ApplicationConfig.WebhookConfig != nil &&
@@ -332,7 +332,7 @@ func (r *Reconciler) updateImageInStatus(esc *operatorv1alpha1.ExternalSecretsCo
 }
 
 // argument list for external-secrets deployment resource.
-func updateContainerSpec(deployment *appsv1.Deployment, esc *operatorv1alpha1.ExternalSecretsConfig, image, logLevel string) {
+func (r *Reconciler) updateContainerSpec(deployment *appsv1.Deployment, esc *operatorv1alpha1.ExternalSecretsConfig, image, logLevel string) {
 	var (
 		enableClusterStoreArgFmt           = "--enable-cluster-store-reconciler=%s"
 		enableClusterExternalSecretsArgFmt = "--enable-cluster-external-secret-reconciler=%s"
@@ -360,8 +360,10 @@ func updateContainerSpec(deployment *appsv1.Deployment, esc *operatorv1alpha1.Ex
 			fmt.Sprintf(enableClusterExternalSecretsArgFmt, "true"))
 	}
 
+	r.updateOptionalFeatures(&args, []operatorv1alpha1.FeatureName{operatorv1alpha1.UnsafeAllowGenericTargets})
+
 	for i, container := range deployment.Spec.Template.Spec.Containers {
-		if container.Name == "external-secrets" {
+		if container.Name == OperandCoreControllerContainer {
 			deployment.Spec.Template.Spec.Containers[i].Args = args
 			deployment.Spec.Template.Spec.Containers[i].Image = image
 			updateContainerSecurityContext(&deployment.Spec.Template.Spec.Containers[i])
@@ -751,5 +753,22 @@ func getComponentNameFromAsset(assetName string) (operatorv1alpha1.ComponentName
 		return operatorv1alpha1.BitwardenSDKServer, bitwardenContainerName, nil
 	default:
 		return "", "", fmt.Errorf("unknown deployment asset name: %s", assetName)
+	}
+}
+
+// updateOptionalFeatures appends container args for enabled ESM features that are
+// supported by the target deployment. supportedFeatures declares which features
+// this deployment accepts; features enabled in ESM but not listed here are ignored.
+func (r *Reconciler) updateOptionalFeatures(containerArgs *[]string, supportedFeatures []operatorv1alpha1.FeatureName) {
+	for _, featureName := range supportedFeatures {
+		if !common.IsFeatureEnabled(r.esm, featureName) {
+			r.log.V(4).Info("feature not active", "feature", featureName)
+			continue
+		}
+
+		switch featureName {
+		case operatorv1alpha1.UnsafeAllowGenericTargets:
+			*containerArgs = append(*containerArgs, UnsafeAllowGenericTargetsArg)
+		}
 	}
 }

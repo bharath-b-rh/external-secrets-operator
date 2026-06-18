@@ -162,3 +162,12 @@ const (
 	// Disabled indicates the optional configuration is disabled.
 	Disabled Mode = "Disabled"
 )
+
+// FeatureName identifies an optional feature that can be configured on the ExternalSecretsManager and applied by the external-secrets-operator.
+type FeatureName string
+
+const (
+	// UnsafeAllowGenericTargets configures the external-secrets core controller to run with the `--unsafe-allow-generic-targets` startup flag,
+	// which allows ExternalSecret resources to sync data into Kubernetes resources other than Secrets.
+	UnsafeAllowGenericTargets FeatureName = "UnsafeAllowGenericTargets"
+)
