@@ -483,6 +483,100 @@ func TestDeploymentObjectChanged(t *testing.T) {
 			t.Fatal("expected no change when fetched pod template only has extra external annotations")
 		}
 	})
+
+	t.Run("env var order difference should not trigger change", func(t *testing.T) {
+		desired := deploymentWithContainerEnv([]corev1.EnvVar{
+			{Name: "HTTP_PROXY", Value: "http://proxy.example.com"},
+			{Name: "HTTPS_PROXY", Value: "https://proxy.example.com"},
+			{Name: "NO_PROXY", Value: "localhost"},
+		})
+		fetched := deploymentWithContainerEnv([]corev1.EnvVar{
+			{Name: "HTTPS_PROXY", Value: "https://proxy.example.com"},
+			{Name: "HTTP_PROXY", Value: "http://proxy.example.com"},
+			{Name: "NO_PROXY", Value: "localhost"},
+		})
+
+		if HasObjectChanged(&desired, &fetched, &ResourceMetadata{}) {
+			t.Fatal("expected no change when env vars differ only in order")
+		}
+	})
+
+	t.Run("env var value difference should trigger change", func(t *testing.T) {
+		desired := deploymentWithContainerEnv([]corev1.EnvVar{
+			{Name: "HTTP_PROXY", Value: "http://proxy.example.com"},
+		})
+		fetched := deploymentWithContainerEnv([]corev1.EnvVar{
+			{Name: "HTTP_PROXY", Value: "http://other.example.com"},
+		})
+
+		if !HasObjectChanged(&desired, &fetched, &ResourceMetadata{}) {
+			t.Fatal("expected change when env var value differs")
+		}
+	})
+
+	t.Run("volume mount order difference should not trigger change", func(t *testing.T) {
+		desired := deploymentWithContainerVolumeMounts([]corev1.VolumeMount{
+			{Name: "trusted-ca-bundle", MountPath: "/etc/pki/tls/certs", ReadOnly: true},
+			{Name: "user-ca-bundle", MountPath: "/etc/pki/tls/user-certs", ReadOnly: true},
+		})
+		fetched := deploymentWithContainerVolumeMounts([]corev1.VolumeMount{
+			{Name: "user-ca-bundle", MountPath: "/etc/pki/tls/user-certs", ReadOnly: true},
+			{Name: "trusted-ca-bundle", MountPath: "/etc/pki/tls/certs", ReadOnly: true},
+		})
+
+		if HasObjectChanged(&desired, &fetched, &ResourceMetadata{}) {
+			t.Fatal("expected no change when volume mounts differ only in order")
+		}
+	})
+
+	t.Run("volume mount path difference should trigger change", func(t *testing.T) {
+		desired := deploymentWithContainerVolumeMounts([]corev1.VolumeMount{
+			{Name: "trusted-ca-bundle", MountPath: "/etc/pki/tls/certs", ReadOnly: true},
+		})
+		fetched := deploymentWithContainerVolumeMounts([]corev1.VolumeMount{
+			{Name: "trusted-ca-bundle", MountPath: "/etc/ssl/certs", ReadOnly: true},
+		})
+
+		if !HasObjectChanged(&desired, &fetched, &ResourceMetadata{}) {
+			t.Fatal("expected change when volume mount path differs")
+		}
+	})
+}
+
+func deploymentWithContainerEnv(env []corev1.EnvVar) appsv1.Deployment {
+	return appsv1.Deployment{
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "external-secrets",
+							Image: "ghcr.io/external-secrets/external-secrets:v2.6.0",
+							Env:   env,
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func deploymentWithContainerVolumeMounts(mounts []corev1.VolumeMount) appsv1.Deployment {
+	return appsv1.Deployment{
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:         "external-secrets",
+							Image:        "ghcr.io/external-secrets/external-secrets:v2.6.0",
+							VolumeMounts: mounts,
+						},
+					},
+				},
+			},
+		},
+	}
 }
 
 func TestIsFeatureEnabled(t *testing.T) {

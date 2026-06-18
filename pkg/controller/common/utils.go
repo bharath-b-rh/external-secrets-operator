@@ -417,8 +417,8 @@ func containerSpecModified(desiredContainer, fetchedContainer *corev1.Container)
 		return true
 	}
 
-	// Check environment variables
-	if !reflect.DeepEqual(desiredContainer.Env, fetchedContainer.Env) {
+	// Check environment variables (order-insensitive)
+	if !envVarsEqual(desiredContainer.Env, fetchedContainer.Env) {
 		return true
 	}
 
@@ -459,8 +459,8 @@ func containerSpecModified(desiredContainer, fetchedContainer *corev1.Container)
 		return true
 	}
 
-	// Check volume mounts
-	if !reflect.DeepEqual(desiredContainer.VolumeMounts, fetchedContainer.VolumeMounts) {
+	// Check volume mounts (order-insensitive)
+	if !volumeMountsEqual(desiredContainer.VolumeMounts, fetchedContainer.VolumeMounts) {
 		return true
 	}
 
@@ -470,6 +470,52 @@ func containerSpecModified(desiredContainer, fetchedContainer *corev1.Container)
 	}
 
 	return false
+}
+
+func envVarsEqual(desired, fetched []corev1.EnvVar) bool {
+	if len(desired) == 0 && len(fetched) == 0 {
+		return true
+	}
+	if len(desired) != len(fetched) {
+		return false
+	}
+
+	fetchedMap := make(map[string]corev1.EnvVar, len(fetched))
+	for _, env := range fetched {
+		fetchedMap[env.Name] = env
+	}
+
+	for _, desiredEnv := range desired {
+		fetchedEnv, exists := fetchedMap[desiredEnv.Name]
+		if !exists || !reflect.DeepEqual(desiredEnv, fetchedEnv) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func volumeMountsEqual(desired, fetched []corev1.VolumeMount) bool {
+	if len(desired) == 0 && len(fetched) == 0 {
+		return true
+	}
+	if len(desired) != len(fetched) {
+		return false
+	}
+
+	fetchedMap := make(map[string]corev1.VolumeMount, len(fetched))
+	for _, mount := range fetched {
+		fetchedMap[mount.Name] = mount
+	}
+
+	for _, desiredMount := range desired {
+		fetchedMount, exists := fetchedMap[desiredMount.Name]
+		if !exists || !reflect.DeepEqual(desiredMount, fetchedMount) {
+			return false
+		}
+	}
+
+	return true
 }
 
 func volumesEqual(desired, fetched []corev1.Volume) bool {

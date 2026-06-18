@@ -1895,3 +1895,23 @@ func TestApplyUserDeploymentConfigsWithOverrideEnv(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeDurationArg(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "5m", want: "5m0s"},
+		{in: "5m0s", want: "5m0s"},
+		{in: "15m0s", want: "15m0s"},
+		{in: "1h", want: "1h0m0s"},
+		{in: "not-a-duration", want: "not-a-duration"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := normalizeDurationArg(tt.in); got != tt.want {
+				t.Errorf("normalizeDurationArg(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}

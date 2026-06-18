@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"time"
 	"unsafe"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -120,10 +121,10 @@ func (r *Reconciler) getDeploymentObject(assetName string, esc *operatorv1alpha1
 	case controllerDeploymentAssetName:
 		r.updateContainerSpec(deployment, esc, image, logLevel)
 	case webhookDeploymentAssetName:
-		checkInterval := "5m"
+		checkInterval := normalizeDurationArg("5m")
 		if esc.Spec.ApplicationConfig.WebhookConfig != nil &&
 			esc.Spec.ApplicationConfig.WebhookConfig.CertificateCheckInterval != nil {
-			checkInterval = esc.Spec.ApplicationConfig.WebhookConfig.CertificateCheckInterval.Duration.String()
+			checkInterval = normalizeDurationArg(esc.Spec.ApplicationConfig.WebhookConfig.CertificateCheckInterval.Duration.String())
 		}
 		updateWebhookContainerSpec(deployment, image, logLevel, checkInterval)
 		updateWebhookVolumeConfig(deployment, esc)
@@ -155,6 +156,16 @@ func (r *Reconciler) getDeploymentObject(assetName string, esc *operatorv1alpha1
 	}
 
 	return deployment, nil
+}
+
+// normalizeDurationArg parses a duration string and returns its canonical Go form
+// (e.g. "5m" → "5m0s") so container args match values persisted by the API server.
+func normalizeDurationArg(raw string) string {
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return raw
+	}
+	return d.String()
 }
 
 // updatePodTemplateLabels sets labels on the pod template spec.
