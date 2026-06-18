@@ -2,13 +2,18 @@ package external_secrets
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
 	"go.uber.org/zap/zapcore"
 
@@ -202,4 +207,85 @@ func validateProxy(rawURL string) error {
 	}
 
 	return nil
+}
+
+// createWithFallback attempts to create a resource and handles the AlreadyExists error that
+// occurs when the resource exists on the API server but is invisible to the label-filtered
+// informer cache (e.g. because the managed label app=external-secrets was externally removed).
+//
+// When Create returns AlreadyExists, this method bypasses the stale cache by using the
+// uncached client to update the resource directly on the API server, restoring the managed
+// labels and annotations to the desired state.
+//
+// It records a "created" event on success, or a "restored" event when the AlreadyExists
+// fallback path is taken.
+func (r *Reconciler) createWithFallback(desired client.Object, resourceMetadata common.ResourceMetadata, resourceName string, esc *operatorv1alpha1.ExternalSecretsConfig) error {
+	kind := desired.GetObjectKind().GroupVersionKind().Kind
+	if kind == "" {
+		gvk, gvkErr := apiutil.GVKForObject(desired, r.Scheme)
+		if gvkErr != nil {
+			r.log.V(5).Info("could not determine GVK, falling back to Go type name",
+				"type", fmt.Sprintf("%T", desired), "err", gvkErr)
+			kind = fmt.Sprintf("%T", desired)
+		} else {
+			kind = gvk.Kind
+		}
+	}
+
+	if err := r.Create(r.ctx, desired); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return common.FromClientError(err, "failed to create %s %s", kind, resourceName)
+		}
+
+		r.log.V(1).Info("resource exists on API server but absent from label-filtered cache, restoring desired state",
+			"kind", kind, "name", resourceName)
+		common.RemoveObsoleteAnnotations(desired, resourceMetadata)
+		if err := r.UncachedClient.UpdateWithRetry(r.ctx, desired); err != nil {
+			return common.FromClientError(err, "failed to restore %s %s to desired state", kind, resourceName)
+		}
+		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "%s resource %s restored to desired state", kind, resourceName)
+		return nil
+	}
+	r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "%s resource %s created", kind, resourceName)
+	return nil
+}
+
+// jsonPatchOp is a single JSON Patch operation.
+type jsonPatchOp struct {
+	Op    string      `json:"op"`
+	Path  string      `json:"path"`
+	Value interface{} `json:"value"`
+}
+
+// patchResourceMetadata fully replaces the labels and annotations on an object using a
+// JSON Patch, leaving all other fields untouched. This is safe for co-managed
+// resources where this operator owns all metadata but data fields are owned by an external
+// controller (e.g. CNO-managed ConfigMap data, cert-controller-managed TLS Secret data).
+//
+// JSON Patch "add" on an existing path replaces the entire value, so the resulting
+// labels/annotations on the server exactly match desired.
+//
+// RemoveObsoleteAnnotations is called defensively to strip any deleted annotation keys
+// from desired before building the patch, regardless of whether the caller already did so.
+func (r *Reconciler) patchResourceMetadata(desired client.Object, resourceMetadata common.ResourceMetadata) error {
+	common.RemoveObsoleteAnnotations(desired, resourceMetadata)
+
+	annotations := desired.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	labels := desired.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+
+	ops := []jsonPatchOp{
+		{Op: "add", Path: "/metadata/labels", Value: labels},
+		{Op: "add", Path: "/metadata/annotations", Value: annotations},
+	}
+	patchBytes, err := json.Marshal(ops)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata patch: %w", err)
+	}
+	return r.CtrlClient.Patch(r.ctx, desired, client.RawPatch(types.JSONPatchType, patchBytes))
 }

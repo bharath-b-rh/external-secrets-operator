@@ -11,6 +11,8 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 
 	"github.com/go-logr/logr/testr"
@@ -36,8 +38,12 @@ func testResourceMetadata(esc *operatorv1alpha1.ExternalSecretsConfig) common.Re
 
 // testReconciler returns a sample Reconciler instance.
 func testReconciler(t *testing.T) *Reconciler {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(certmanagerv1.AddToScheme(scheme))
+
 	return &Reconciler{
-		Scheme:                runtime.NewScheme(),
+		Scheme:                scheme,
 		ctx:                   context.Background(),
 		eventRecorder:         record.NewFakeRecorder(100),
 		log:                   testr.New(t),

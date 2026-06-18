@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -256,29 +257,43 @@ func checkAndRegisterCertificates(ctx context.Context, mgr ctrl.Manager, r *Reco
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	mapFunc := func(ctx context.Context, obj client.Object) []reconcile.Request {
 		r.log.V(4).Info("received reconcile event", "object", fmt.Sprintf("%T", obj), "name", obj.GetName(), "namespace", obj.GetNamespace())
-
-		objLabels := obj.GetLabels()
-		if objLabels != nil {
-			if objLabels[requestEnqueueLabelKey] == requestEnqueueLabelValue {
-				return []reconcile.Request{
-					{
-						NamespacedName: types.NamespacedName{
-							Name: common.ExternalSecretsConfigObjectName,
-						},
-					},
-				}
-			}
+		return []reconcile.Request{
+			{
+				NamespacedName: types.NamespacedName{
+					Name: common.ExternalSecretsConfigObjectName,
+				},
+			},
 		}
-		r.log.V(4).Info("object not of interest, ignoring reconcile event", "object", fmt.Sprintf("%T", obj), "name", obj.GetName(), "namespace", obj.GetNamespace())
-		return []reconcile.Request{}
 	}
 
-	// predicate function to ignore events for objects not managed by controller.
-	managedResources := predicate.NewPredicateFuncs(func(object client.Object) bool {
-		return object.GetLabels() != nil && object.GetLabels()[requestEnqueueLabelKey] == requestEnqueueLabelValue
-	})
+	isManagedResource := func(object client.Object) bool {
+		labels := object.GetLabels()
+		matches := labels != nil && labels[requestEnqueueLabelKey] == requestEnqueueLabelValue
+		r.log.V(4).Info("predicate evaluation", "object", fmt.Sprintf("%T", object), "name", object.GetName(), "namespace", object.GetNamespace(), "labels", labels, "matches", matches)
+		return matches
+	}
 
-	withIgnoreStatusUpdatePredicates := builder.WithPredicates(predicate.GenerationChangedPredicate{}, managedResources)
+	// On updates, check both old and new objects so that events where the managed
+	// label is removed externally still trigger reconciliation and label restoration.
+	managedResources := predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return isManagedResource(e.Object)
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return isManagedResource(e.ObjectOld) || isManagedResource(e.ObjectNew)
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			return isManagedResource(e.Object)
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return isManagedResource(e.Object)
+		},
+	}
+
+	withIgnoreStatusUpdatePredicates := builder.WithPredicates(
+		predicate.Or(predicate.GenerationChangedPredicate{}, predicate.LabelChangedPredicate{}),
+		managedResources,
+	)
 	managedResourcePredicate := builder.WithPredicates(managedResources)
 
 	mgrBuilder := ctrl.NewControllerManagedBy(mgr).

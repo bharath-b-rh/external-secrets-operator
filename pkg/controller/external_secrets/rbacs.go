@@ -125,10 +125,9 @@ func (r *Reconciler) createOrApplyClusterRole(esc *operatorv1alpha1.ExternalSecr
 		r.log.V(4).Info("clusterrole resource already exists and is in expected state", "name", clusterRoleName)
 	}
 	if !exist {
-		if err := r.Create(r.ctx, obj); err != nil {
-			return common.FromClientError(err, "failed to create %s clusterrole resource", clusterRoleName)
+		if err := r.createWithFallback(obj, resourceMetadata, clusterRoleName, esc); err != nil {
+			return err
 		}
-		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "clusterrole resource %s created", clusterRoleName)
 	}
 
 	return nil
@@ -171,10 +170,9 @@ func (r *Reconciler) createOrApplyClusterRoleBinding(esc *operatorv1alpha1.Exter
 		r.log.V(4).Info("clusterrolebinding resource already exists and is in expected state", "name", clusterRoleBindingName)
 	}
 	if !exist {
-		if err := r.Create(r.ctx, obj); err != nil {
-			return common.FromClientError(err, "failed to create %s clusterrolebinding resource", clusterRoleBindingName)
+		if err := r.createWithFallback(obj, resourceMetadata, clusterRoleBindingName, esc); err != nil {
+			return err
 		}
-		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "clusterrolebinding resource %s created", clusterRoleBindingName)
 	}
 
 	return nil
@@ -215,10 +213,9 @@ func (r *Reconciler) createOrApplyRole(esc *operatorv1alpha1.ExternalSecretsConf
 		r.log.V(4).Info("role resource already exists and is in expected state", "name", roleName)
 	}
 	if !exist {
-		if err := r.Create(r.ctx, obj); err != nil {
-			return common.FromClientError(err, "failed to create %s role resource", roleName)
+		if err := r.createWithFallback(obj, resourceMetadata, roleName, esc); err != nil {
+			return err
 		}
-		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "role resource %s created", roleName)
 	}
 
 	return nil
@@ -258,10 +255,9 @@ func (r *Reconciler) createOrApplyRoleBinding(esc *operatorv1alpha1.ExternalSecr
 		r.log.V(4).Info("rolebinding resource already exists and is in expected state", "name", roleBindingName)
 	}
 	if !exist {
-		if err := r.Create(r.ctx, obj); err != nil {
-			return common.FromClientError(err, "failed to create %s rolebinding resource", roleBindingName)
+		if err := r.createWithFallback(obj, resourceMetadata, roleBindingName, esc); err != nil {
+			return err
 		}
-		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "rolebinding resource %s created", roleBindingName)
 	}
 
 	return nil

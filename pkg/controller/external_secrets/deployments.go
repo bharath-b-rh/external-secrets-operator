@@ -89,10 +89,9 @@ func (r *Reconciler) createOrApplyDeploymentFromAsset(esc *operatorv1alpha1.Exte
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "deployment resource %s updated", deploymentName)
 	case !exist:
-		if err := r.Create(r.ctx, deployment); err != nil {
-			return common.FromClientError(err, "failed to create %s deployment resource", deploymentName)
+		if err := r.createWithFallback(deployment, resourceMetadata, deploymentName, esc); err != nil {
+			return err
 		}
-		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "deployment resource %s created", deploymentName)
 	default:
 		r.log.V(4).Info("deployment resource already exists and is in expected state", "name", deploymentName)
 	}

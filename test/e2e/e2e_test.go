@@ -1203,6 +1203,677 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 
 	})
 
+	// Context("Managed Annotation Restoration") tests that when a managed annotation is
+	// externally removed from a resource, the operator detects the drift and restores it.
+	// Resources intentionally excluded:
+	//   - Deployment: Kubernetes adds deployment.kubernetes.io/revision on every rollout,
+	//     so annotation events are suppressed to avoid infinite reconcile loops.
+	Context("Managed Annotation Restoration", Ordered, Label("Platform:AWS"), func() {
+		const (
+			restorationAnnotationKey   = "example.com/restoration-test"
+			restorationAnnotationValue = "managed-value"
+		)
+
+		BeforeAll(func() {
+			By("Adding the restoration test annotation to ExternalSecretsConfig spec")
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				cr := &operatorv1alpha1.ExternalSecretsConfig{}
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, cr); err != nil {
+					return err
+				}
+				if cr.Spec.ControllerConfig.Annotations == nil {
+					cr.Spec.ControllerConfig.Annotations = make(map[string]string)
+				}
+				cr.Spec.ControllerConfig.Annotations[restorationAnnotationKey] = restorationAnnotationValue
+				return runtimeClient.Update(ctx, cr)
+			})
+			Expect(err).NotTo(HaveOccurred(), "should add restoration annotation to ExternalSecretsConfig")
+		})
+
+		AfterAll(func() {
+			By("Removing the restoration test annotation from ExternalSecretsConfig spec")
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				cr := &operatorv1alpha1.ExternalSecretsConfig{}
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, cr); err != nil {
+					return err
+				}
+				delete(cr.Spec.ControllerConfig.Annotations, restorationAnnotationKey)
+				return runtimeClient.Update(ctx, cr)
+			})
+			Expect(err).NotTo(HaveOccurred(), "should remove restoration annotation from ExternalSecretsConfig")
+
+			By("Verifying ExternalSecretsConfig is Ready after annotation restoration tests")
+			Expect(utils.WaitForExternalSecretsConfigReady(ctx, dynamicClient, "cluster", 2*time.Minute)).To(Succeed())
+
+			By("Verifying operand pods are still ready after annotation restoration tests")
+			Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, operandNamespace, []string{
+				operandCoreControllerPodPrefix,
+				operandCertControllerPodPrefix,
+				operandWebhookPodPrefix,
+			})).To(Succeed())
+		})
+
+		It("should restore a managed annotation on a ServiceAccount after external removal", func() {
+			saName := "external-secrets"
+
+			By("Verifying ServiceAccount has the managed annotation initially")
+			Eventually(func(g Gomega) {
+				sa, err := clientset.CoreV1().ServiceAccounts(operandNamespace).Get(ctx, saName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(sa.Annotations).To(HaveKeyWithValue(restorationAnnotationKey, restorationAnnotationValue))
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Externally removing the managed annotation from the ServiceAccount")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				sa, err := clientset.CoreV1().ServiceAccounts(operandNamespace).Get(ctx, saName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(sa.Annotations, restorationAnnotationKey)
+				_, err = clientset.CoreV1().ServiceAccounts(operandNamespace).Update(ctx, sa, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed())
+
+			By("Waiting for operator to restore the managed annotation")
+			Eventually(func(g Gomega) {
+				sa, err := clientset.CoreV1().ServiceAccounts(operandNamespace).Get(ctx, saName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(sa.Annotations).To(HaveKeyWithValue(restorationAnnotationKey, restorationAnnotationValue),
+					"operator should restore annotation on ServiceAccount %s", saName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should restore a managed annotation on a Role after external removal", func() {
+			roleName := "external-secrets-leaderelection"
+
+			By("Verifying Role has the managed annotation initially")
+			Eventually(func(g Gomega) {
+				role, err := clientset.RbacV1().Roles(operandNamespace).Get(ctx, roleName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(role.Annotations).To(HaveKeyWithValue(restorationAnnotationKey, restorationAnnotationValue))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Externally removing the managed annotation from the Role")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				role, err := clientset.RbacV1().Roles(operandNamespace).Get(ctx, roleName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(role.Annotations, restorationAnnotationKey)
+				_, err = clientset.RbacV1().Roles(operandNamespace).Update(ctx, role, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed())
+
+			By("Waiting for operator to restore the managed annotation")
+			Eventually(func(g Gomega) {
+				role, err := clientset.RbacV1().Roles(operandNamespace).Get(ctx, roleName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(role.Annotations).To(HaveKeyWithValue(restorationAnnotationKey, restorationAnnotationValue),
+					"operator should restore annotation on Role %s", roleName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should restore a managed annotation on a RoleBinding after external removal", func() {
+			roleBindingName := "external-secrets-leaderelection"
+
+			By("Verifying RoleBinding has the managed annotation initially")
+			Eventually(func(g Gomega) {
+				rb, err := clientset.RbacV1().RoleBindings(operandNamespace).Get(ctx, roleBindingName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(rb.Annotations).To(HaveKeyWithValue(restorationAnnotationKey, restorationAnnotationValue))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Externally removing the managed annotation from the RoleBinding")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				rb, err := clientset.RbacV1().RoleBindings(operandNamespace).Get(ctx, roleBindingName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(rb.Annotations, restorationAnnotationKey)
+				_, err = clientset.RbacV1().RoleBindings(operandNamespace).Update(ctx, rb, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed())
+
+			By("Waiting for operator to restore the managed annotation")
+			Eventually(func(g Gomega) {
+				rb, err := clientset.RbacV1().RoleBindings(operandNamespace).Get(ctx, roleBindingName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(rb.Annotations).To(HaveKeyWithValue(restorationAnnotationKey, restorationAnnotationValue),
+					"operator should restore annotation on RoleBinding %s", roleBindingName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should restore a managed annotation on a ClusterRole after external removal", func() {
+			clusterRoleName := "external-secrets-controller"
+
+			By("Verifying ClusterRole has the managed annotation initially")
+			Eventually(func(g Gomega) {
+				cr, err := clientset.RbacV1().ClusterRoles().Get(ctx, clusterRoleName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(cr.Annotations).To(HaveKeyWithValue(restorationAnnotationKey, restorationAnnotationValue))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Externally removing the managed annotation from the ClusterRole")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				cr, err := clientset.RbacV1().ClusterRoles().Get(ctx, clusterRoleName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(cr.Annotations, restorationAnnotationKey)
+				_, err = clientset.RbacV1().ClusterRoles().Update(ctx, cr, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed())
+
+			By("Waiting for operator to restore the managed annotation")
+			Eventually(func(g Gomega) {
+				cr, err := clientset.RbacV1().ClusterRoles().Get(ctx, clusterRoleName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(cr.Annotations).To(HaveKeyWithValue(restorationAnnotationKey, restorationAnnotationValue),
+					"operator should restore annotation on ClusterRole %s", clusterRoleName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should restore a managed annotation on a ClusterRoleBinding after external removal", func() {
+			clusterRoleBindingName := "external-secrets-controller"
+
+			By("Verifying ClusterRoleBinding has the managed annotation initially")
+			Eventually(func(g Gomega) {
+				crb, err := clientset.RbacV1().ClusterRoleBindings().Get(ctx, clusterRoleBindingName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(crb.Annotations).To(HaveKeyWithValue(restorationAnnotationKey, restorationAnnotationValue))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Externally removing the managed annotation from the ClusterRoleBinding")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				crb, err := clientset.RbacV1().ClusterRoleBindings().Get(ctx, clusterRoleBindingName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(crb.Annotations, restorationAnnotationKey)
+				_, err = clientset.RbacV1().ClusterRoleBindings().Update(ctx, crb, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed())
+
+			By("Waiting for operator to restore the managed annotation")
+			Eventually(func(g Gomega) {
+				crb, err := clientset.RbacV1().ClusterRoleBindings().Get(ctx, clusterRoleBindingName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(crb.Annotations).To(HaveKeyWithValue(restorationAnnotationKey, restorationAnnotationValue),
+					"operator should restore annotation on ClusterRoleBinding %s", clusterRoleBindingName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should restore a managed annotation on a Service after external removal", func() {
+			serviceName := "external-secrets-webhook"
+
+			By("Verifying Service has the managed annotation initially")
+			Eventually(func(g Gomega) {
+				svc, err := clientset.CoreV1().Services(operandNamespace).Get(ctx, serviceName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(svc.Annotations).To(HaveKeyWithValue(restorationAnnotationKey, restorationAnnotationValue))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Externally removing the managed annotation from the Service")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				svc, err := clientset.CoreV1().Services(operandNamespace).Get(ctx, serviceName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(svc.Annotations, restorationAnnotationKey)
+				_, err = clientset.CoreV1().Services(operandNamespace).Update(ctx, svc, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed())
+
+			By("Waiting for operator to restore the managed annotation")
+			Eventually(func(g Gomega) {
+				svc, err := clientset.CoreV1().Services(operandNamespace).Get(ctx, serviceName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(svc.Annotations).To(HaveKeyWithValue(restorationAnnotationKey, restorationAnnotationValue),
+					"operator should restore annotation on Service %s", serviceName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should restore a managed annotation on a NetworkPolicy after external removal", func() {
+			npName := "eso-sys-deny-all-traffic"
+
+			By("Verifying NetworkPolicy has the managed annotation initially")
+			Eventually(func(g Gomega) {
+				np, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(np.Annotations).To(HaveKeyWithValue(restorationAnnotationKey, restorationAnnotationValue))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Externally removing the managed annotation from the NetworkPolicy")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				np, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(np.Annotations, restorationAnnotationKey)
+				_, err = clientset.NetworkingV1().NetworkPolicies(operandNamespace).Update(ctx, np, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed())
+
+			By("Waiting for operator to restore the managed annotation")
+			Eventually(func(g Gomega) {
+				np, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(np.Annotations).To(HaveKeyWithValue(restorationAnnotationKey, restorationAnnotationValue),
+					"operator should restore annotation on NetworkPolicy %s", npName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+	})
+
+	// Context("Custom Labels") tests that labels added via esc.Spec.ControllerConfig.Labels
+	// are propagated to all managed resources, and that removing a label from the spec
+	// causes the operator to remove it from all resources. This exercises the full
+	// label lifecycle across every resource type, including the co-managed Secret whose
+	// metadata is patched via JSON Patch rather than a full update.
+	Context("Custom Labels", Label("Platform:AWS"), func() {
+		AfterEach(func() {
+			By("Verifying ExternalSecretsConfig is Ready and not Degraded after label lifecycle test")
+			Expect(utils.WaitForExternalSecretsConfigReady(ctx, dynamicClient, "cluster", 2*time.Minute)).To(Succeed(),
+				"ExternalSecretsConfig should remain Ready after custom label add/remove")
+
+			By("Verifying operand pods are still ready after label lifecycle test")
+			Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, operandNamespace, []string{
+				operandCoreControllerPodPrefix,
+				operandCertControllerPodPrefix,
+				operandWebhookPodPrefix,
+			})).To(Succeed(), "operand pods should still be running after custom label lifecycle test")
+		})
+
+		It("should apply and remove custom labels to all managed resources", func() {
+			testLabels := map[string]string{
+				"mycompany.io/env": "staging",
+			}
+
+			existingCR := &operatorv1alpha1.ExternalSecretsConfig{}
+			Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, existingCR)).To(Succeed(),
+				"should get ExternalSecretsConfig to capture initial state")
+			originalLabels := maps.Clone(existingCR.Spec.ControllerConfig.Labels)
+
+			defer func() {
+				By("Restoring original labels on ExternalSecretsConfig CR")
+				err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+					currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
+					if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+						return err
+					}
+					currentCR.Spec.ControllerConfig.Labels = originalLabels
+					return runtimeClient.Update(ctx, currentCR)
+				})
+				Expect(err).NotTo(HaveOccurred(), "should restore labels on ExternalSecretsConfig")
+			}()
+
+			By("Updating ExternalSecretsConfig with custom labels")
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+					return err
+				}
+				merged := make(map[string]string)
+				if originalLabels != nil {
+					maps.Copy(merged, originalLabels)
+				}
+				maps.Copy(merged, testLabels)
+				currentCR.Spec.ControllerConfig.Labels = merged
+				return runtimeClient.Update(ctx, currentCR)
+			})
+			Expect(err).NotTo(HaveOccurred(), "should update ExternalSecretsConfig with custom labels")
+
+			By("Waiting for external-secrets operand pods to be ready")
+			Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, operandNamespace, []string{
+				operandCoreControllerPodPrefix,
+				operandCertControllerPodPrefix,
+				operandWebhookPodPrefix,
+			})).To(Succeed())
+
+			for _, resourceType := range getResourceTypesToVerify() {
+				By(fmt.Sprintf("Verifying custom labels are applied to %s resources", resourceType.name))
+				Eventually(func(g Gomega) {
+					objects, err := resourceType.listFunc(ctx, clientset, operandNamespace, g)
+					g.Expect(err).NotTo(HaveOccurred(), "should list %s", resourceType.name)
+
+					for _, obj := range objects {
+						if !strings.HasPrefix(obj.GetName(), "external-secrets") {
+							continue
+						}
+						for k, v := range testLabels {
+							g.Expect(obj.GetLabels()).To(HaveKeyWithValue(k, v),
+								"%s %s should have label %s=%s", resourceType.name, obj.GetName(), k, v)
+						}
+					}
+				}, 2*time.Minute, 5*time.Second).Should(Succeed())
+			}
+
+			By("Removing custom labels from ExternalSecretsConfig CR")
+			err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+					return err
+				}
+				for k := range testLabels {
+					delete(currentCR.Spec.ControllerConfig.Labels, k)
+				}
+				return runtimeClient.Update(ctx, currentCR)
+			})
+			Expect(err).NotTo(HaveOccurred(), "should remove custom labels from ExternalSecretsConfig")
+
+			for _, resourceType := range getResourceTypesToVerify() {
+				By(fmt.Sprintf("Verifying custom labels are removed from %s resources", resourceType.name))
+				Eventually(func(g Gomega) {
+					objects, err := resourceType.listFunc(ctx, clientset, operandNamespace, g)
+					g.Expect(err).NotTo(HaveOccurred(), "should list %s", resourceType.name)
+
+					for _, obj := range objects {
+						if !strings.HasPrefix(obj.GetName(), "external-secrets") {
+							continue
+						}
+						for k := range testLabels {
+							g.Expect(obj.GetLabels()).NotTo(HaveKey(k),
+								"%s %s should NOT have label %s after removal", resourceType.name, obj.GetName(), k)
+						}
+					}
+				}, 2*time.Minute, 5*time.Second).Should(Succeed())
+			}
+		})
+	})
+
+	Context("Managed Label Restoration", Label("Platform:AWS"), func() {
+		const (
+			managedLabelKey   = "app"
+			managedLabelValue = "external-secrets"
+		)
+
+		AfterEach(func() {
+			By("Verifying ExternalSecretsConfig is Ready and not Degraded after label restoration")
+			Expect(utils.WaitForExternalSecretsConfigReady(ctx, dynamicClient, "cluster", 2*time.Minute)).To(Succeed(),
+				"ExternalSecretsConfig should remain Ready after label tampering and restoration")
+
+			By("Verifying operand pods are still ready after label restoration")
+			Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, operandNamespace, []string{
+				operandCoreControllerPodPrefix,
+				operandCertControllerPodPrefix,
+				operandWebhookPodPrefix,
+			})).To(Succeed(), "operand pods should still be running after label restoration")
+		})
+
+		It("should restore the app=external-secrets label on a ServiceAccount after external removal", func() {
+			saName := "external-secrets"
+
+			By("Verifying ServiceAccount has the managed label initially")
+			Eventually(func(g Gomega) {
+				sa, err := clientset.CoreV1().ServiceAccounts(operandNamespace).Get(ctx, saName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(sa.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Removing the managed label from the ServiceAccount")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				sa, err := clientset.CoreV1().ServiceAccounts(operandNamespace).Get(ctx, saName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(sa.Labels, managedLabelKey)
+				_, err = clientset.CoreV1().ServiceAccounts(operandNamespace).Update(ctx, sa, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed(), "should remove the managed label")
+
+			By("Waiting for operator to restore the managed label")
+			Eventually(func(g Gomega) {
+				sa, err := clientset.CoreV1().ServiceAccounts(operandNamespace).Get(ctx, saName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(sa.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue),
+					"operator should restore app=external-secrets on ServiceAccount %s", saName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should restore the app=external-secrets label on a Role after external removal", func() {
+			roleName := "external-secrets-leaderelection"
+
+			By("Verifying Role has the managed label initially")
+			Eventually(func(g Gomega) {
+				role, err := clientset.RbacV1().Roles(operandNamespace).Get(ctx, roleName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(role.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Removing the managed label from the Role")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				role, err := clientset.RbacV1().Roles(operandNamespace).Get(ctx, roleName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(role.Labels, managedLabelKey)
+				_, err = clientset.RbacV1().Roles(operandNamespace).Update(ctx, role, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed(), "should remove the managed label")
+
+			By("Waiting for operator to restore the managed label")
+			Eventually(func(g Gomega) {
+				role, err := clientset.RbacV1().Roles(operandNamespace).Get(ctx, roleName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(role.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue),
+					"operator should restore app=external-secrets on Role %s", roleName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should restore the app=external-secrets label on a Deployment after external removal", func() {
+			depName := "external-secrets"
+
+			By("Verifying Deployment has the managed label initially")
+			Eventually(func(g Gomega) {
+				dep, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, depName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(dep.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Removing the managed label from the Deployment")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				dep, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, depName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(dep.Labels, managedLabelKey)
+				_, err = clientset.AppsV1().Deployments(operandNamespace).Update(ctx, dep, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed(), "should remove the managed label")
+
+			By("Waiting for operator to restore the managed label")
+			Eventually(func(g Gomega) {
+				dep, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, depName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(dep.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue),
+					"operator should restore app=external-secrets on Deployment %s", depName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		// Secret uses patchResourceMetadata (JSON Patch) rather than UpdateWithRetry because
+		// its Data field is co-managed by the cert-controller. This test specifically exercises
+		// that the metadata-only patch path correctly restores the managed label.
+		It("should restore the app=external-secrets label on a Secret after external removal", func() {
+			secretName := "external-secrets-webhook"
+
+			By("Verifying Secret has the managed label initially")
+			Eventually(func(g Gomega) {
+				secret, err := clientset.CoreV1().Secrets(operandNamespace).Get(ctx, secretName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(secret.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Removing the managed label from the Secret")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				secret, err := clientset.CoreV1().Secrets(operandNamespace).Get(ctx, secretName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(secret.Labels, managedLabelKey)
+				_, err = clientset.CoreV1().Secrets(operandNamespace).Update(ctx, secret, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed(), "should remove the managed label")
+
+			By("Waiting for operator to restore the managed label")
+			Eventually(func(g Gomega) {
+				secret, err := clientset.CoreV1().Secrets(operandNamespace).Get(ctx, secretName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(secret.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue),
+					"operator should restore app=external-secrets on Secret %s", secretName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should restore the app=external-secrets label on a Service after external removal", func() {
+			serviceName := "external-secrets-webhook"
+
+			By("Verifying Service has the managed label initially")
+			Eventually(func(g Gomega) {
+				svc, err := clientset.CoreV1().Services(operandNamespace).Get(ctx, serviceName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(svc.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Removing the managed label from the Service")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				svc, err := clientset.CoreV1().Services(operandNamespace).Get(ctx, serviceName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(svc.Labels, managedLabelKey)
+				_, err = clientset.CoreV1().Services(operandNamespace).Update(ctx, svc, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed(), "should remove the managed label")
+
+			By("Waiting for operator to restore the managed label")
+			Eventually(func(g Gomega) {
+				svc, err := clientset.CoreV1().Services(operandNamespace).Get(ctx, serviceName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(svc.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue),
+					"operator should restore app=external-secrets on Service %s", serviceName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should restore the app=external-secrets label on a RoleBinding after external removal", func() {
+			roleBindingName := "external-secrets-leaderelection"
+
+			By("Verifying RoleBinding has the managed label initially")
+			Eventually(func(g Gomega) {
+				rb, err := clientset.RbacV1().RoleBindings(operandNamespace).Get(ctx, roleBindingName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(rb.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Removing the managed label from the RoleBinding")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				rb, err := clientset.RbacV1().RoleBindings(operandNamespace).Get(ctx, roleBindingName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(rb.Labels, managedLabelKey)
+				_, err = clientset.RbacV1().RoleBindings(operandNamespace).Update(ctx, rb, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed(), "should remove the managed label")
+
+			By("Waiting for operator to restore the managed label")
+			Eventually(func(g Gomega) {
+				rb, err := clientset.RbacV1().RoleBindings(operandNamespace).Get(ctx, roleBindingName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(rb.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue),
+					"operator should restore app=external-secrets on RoleBinding %s", roleBindingName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should restore the app=external-secrets label on a ClusterRole after external removal", func() {
+			clusterRoleName := "external-secrets-controller"
+
+			By("Verifying ClusterRole has the managed label initially")
+			Eventually(func(g Gomega) {
+				cr, err := clientset.RbacV1().ClusterRoles().Get(ctx, clusterRoleName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(cr.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Removing the managed label from the ClusterRole")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				cr, err := clientset.RbacV1().ClusterRoles().Get(ctx, clusterRoleName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(cr.Labels, managedLabelKey)
+				_, err = clientset.RbacV1().ClusterRoles().Update(ctx, cr, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed(), "should remove the managed label")
+
+			By("Waiting for operator to restore the managed label")
+			Eventually(func(g Gomega) {
+				cr, err := clientset.RbacV1().ClusterRoles().Get(ctx, clusterRoleName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(cr.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue),
+					"operator should restore app=external-secrets on ClusterRole %s", clusterRoleName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should restore the app=external-secrets label on a ClusterRoleBinding after external removal", func() {
+			clusterRoleBindingName := "external-secrets-controller"
+
+			By("Verifying ClusterRoleBinding has the managed label initially")
+			Eventually(func(g Gomega) {
+				crb, err := clientset.RbacV1().ClusterRoleBindings().Get(ctx, clusterRoleBindingName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(crb.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Removing the managed label from the ClusterRoleBinding")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				crb, err := clientset.RbacV1().ClusterRoleBindings().Get(ctx, clusterRoleBindingName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(crb.Labels, managedLabelKey)
+				_, err = clientset.RbacV1().ClusterRoleBindings().Update(ctx, crb, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed(), "should remove the managed label")
+
+			By("Waiting for operator to restore the managed label")
+			Eventually(func(g Gomega) {
+				crb, err := clientset.RbacV1().ClusterRoleBindings().Get(ctx, clusterRoleBindingName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(crb.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue),
+					"operator should restore app=external-secrets on ClusterRoleBinding %s", clusterRoleBindingName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("should restore the app=external-secrets label on a NetworkPolicy after external removal", func() {
+			npName := "eso-sys-deny-all-traffic"
+
+			By("Verifying NetworkPolicy has the managed label initially")
+			Eventually(func(g Gomega) {
+				np, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(np.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Removing the managed label from the NetworkPolicy")
+			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				np, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				delete(np.Labels, managedLabelKey)
+				_, err = clientset.NetworkingV1().NetworkPolicies(operandNamespace).Update(ctx, np, metav1.UpdateOptions{})
+				return err
+			})).To(Succeed(), "should remove the managed label")
+
+			By("Waiting for operator to restore the managed label")
+			Eventually(func(g Gomega) {
+				np, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npName, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(np.Labels).To(HaveKeyWithValue(managedLabelKey, managedLabelValue),
+					"operator should restore app=external-secrets on NetworkPolicy %s", npName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+	})
+
 	AfterAll(func() {
 		By("Deleting the externalsecrets.openshift.operator.io/cluster CR")
 		loader.DeleteFromFile(testassets.ReadFile, externalSecretsFile, "")
