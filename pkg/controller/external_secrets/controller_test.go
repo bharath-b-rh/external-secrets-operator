@@ -261,12 +261,14 @@ func TestReconcileDeploymentFailureResult(t *testing.T) {
 		),
 	)
 	irrecoverableErr := common.NewIrrecoverableError(errors.New("forbidden"), "permission denied")
+	statusUpdateErr := errors.New("status update failed")
 	retryErr := common.NewRetryRequiredError(errors.New("timeout"), "temporary failure")
 	proxyErr := common.NewUserConfigurationError(errors.New("invalid proxy URL configured"), "proxy configuration validation failed")
 
 	tests := []struct {
 		name            string
 		reconcileErr    error
+		statusUpdateErr error
 		wantRequeue     time.Duration
 		wantReturnError error
 	}{
@@ -276,9 +278,14 @@ func TestReconcileDeploymentFailureResult(t *testing.T) {
 			wantRequeue:  common.DefaultRequeueTime,
 		},
 		{
-			name:            "irrecoverable error does not requeue",
+			name:         "irrecoverable error does not requeue",
+			reconcileErr: irrecoverableErr,
+		},
+		{
+			name:            "irrecoverable error returns status update failure",
 			reconcileErr:    irrecoverableErr,
-			wantReturnError: irrecoverableErr,
+			statusUpdateErr: statusUpdateErr,
+			wantReturnError: statusUpdateErr,
 		},
 		{
 			name:         "proxy configuration error waits for CR update",
@@ -303,7 +310,7 @@ func TestReconcileDeploymentFailureResult(t *testing.T) {
 				return nil
 			})
 			mock.StatusUpdateCalls(func(_ context.Context, _ client.Object, _ ...client.SubResourceUpdateOption) error {
-				return nil
+				return tt.statusUpdateErr
 			})
 			r.CtrlClient = mock
 
@@ -314,7 +321,10 @@ func TestReconcileDeploymentFailureResult(t *testing.T) {
 				1,
 			)
 			if tt.wantReturnError != nil {
-				if err == nil || err.Error() != tt.wantReturnError.Error() {
+				if err == nil {
+					t.Fatalf("reconcileDeploymentFailureResult() err = nil, want %v", tt.wantReturnError)
+				}
+				if err.Error() != tt.wantReturnError.Error() && !strings.Contains(err.Error(), tt.wantReturnError.Error()) {
 					t.Fatalf("reconcileDeploymentFailureResult() err = %v, want %v", err, tt.wantReturnError)
 				}
 			} else if err != nil {

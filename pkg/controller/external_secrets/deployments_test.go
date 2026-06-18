@@ -1999,7 +1999,7 @@ func TestApplyUserDeploymentConfigsWithOverrideEnv(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := &Reconciler{}
+			r := testReconciler(t)
 			initEnv := []corev1.EnvVar{{Name: "INIT_ONLY_VAR", Value: "init-value"}}
 			deployment := &appsv1.Deployment{
 				Spec: appsv1.DeploymentSpec{
@@ -2394,4 +2394,82 @@ func TestApplyUserCABundleConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCreateOrApplyDeploymentFromAssetReturnsTrustedCAError(t *testing.T) {
+	esc := commontest.TestExternalSecretsConfig()
+	esc.Spec.ControllerConfig.TrustedCABundle = &v1alpha1.ConfigMapKeyReference{
+		Name: "user-ca-bundle",
+		Key:  UserCABundleKeyPath,
+	}
+	resourceMetadata := testResourceMetadata(esc)
+
+	t.Setenv("RELATED_IMAGE_EXTERNAL_SECRETS", commontest.TestExternalSecretsImageName)
+	t.Setenv("RELATED_IMAGE_BITWARDEN_SDK_SERVER", commontest.TestBitwardenImageName)
+
+	setupMissingUserCAClients := func() (*fakes.FakeCtrlClient, *fakes.FakeCtrlClient) {
+		cached := &fakes.FakeCtrlClient{}
+		uncached := &fakes.FakeCtrlClient{}
+		notFound := func(_ context.Context, ns types.NamespacedName, _ client.Object) error {
+			return apierrors.NewNotFound(corev1.Resource("configmaps"), ns.Name)
+		}
+		cached.GetCalls(notFound)
+		uncached.GetCalls(notFound)
+		return cached, uncached
+	}
+
+	newReconciler := func(cached, uncached *fakes.FakeCtrlClient) *Reconciler {
+		r := testReconciler(t)
+		r.CtrlClient = cached
+		r.UncachedClient = uncached
+		return r
+	}
+
+	t.Run("returns TrustedCABundleError when deployment is unchanged", func(t *testing.T) {
+		t.Parallel()
+
+		cached, uncached := setupMissingUserCAClients()
+		r := newReconciler(cached, uncached)
+
+		desired, trustedCAErr := r.getDeploymentObject(controllerDeploymentAssetName, esc, resourceMetadata)
+		if trustedCAErr == nil {
+			t.Fatal("expected trustedCAErr from missing ConfigMap")
+		}
+		if !common.IsUserConfigurationNotFound(trustedCAErr) {
+			t.Fatalf("expected NotFound user configuration error, got %v", trustedCAErr)
+		}
+
+		cached.ExistsCalls(func(_ context.Context, _ types.NamespacedName, obj client.Object) (bool, error) {
+			desired.DeepCopyInto(obj.(*appsv1.Deployment))
+			return true, nil
+		})
+
+		err := r.createOrApplyDeploymentFromAsset(esc, controllerDeploymentAssetName, resourceMetadata, false)
+		if err == nil {
+			t.Fatal("createOrApplyDeploymentFromAsset() error = nil, want TrustedCABundleError")
+		}
+		if !common.IsUserConfigurationNotFound(err) {
+			t.Fatalf("expected NotFound user configuration error, got %v", err)
+		}
+	})
+
+	t.Run("returns TrustedCABundleError after create", func(t *testing.T) {
+		t.Parallel()
+
+		cached, uncached := setupMissingUserCAClients()
+		r := newReconciler(cached, uncached)
+
+		cached.ExistsCalls(doesNotExist())
+		cached.CreateCalls(func(context.Context, client.Object, ...client.CreateOption) error {
+			return nil
+		})
+
+		err := r.createOrApplyDeploymentFromAsset(esc, controllerDeploymentAssetName, resourceMetadata, false)
+		if err == nil {
+			t.Fatal("createOrApplyDeploymentFromAsset() error = nil, want TrustedCABundleError")
+		}
+		if !common.IsUserConfigurationNotFound(err) {
+			t.Fatalf("expected NotFound user configuration error, got %v", err)
+		}
+	})
 }

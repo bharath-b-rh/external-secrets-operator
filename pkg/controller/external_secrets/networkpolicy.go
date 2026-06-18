@@ -131,26 +131,29 @@ func (r *Reconciler) createOrApplyCustomNetworkPolicy(esc *operatorv1alpha1.Exte
 		return common.FromClientError(err, "failed to check existence of network policy %s", networkPolicyName)
 	}
 
-	if exists && externalSecretsConfigCreateRecon {
-		r.eventRecorder.Eventf(esc, corev1.EventTypeWarning, "ResourceAlreadyExists", "NetworkPolicy %s already exists", networkPolicyName)
-	}
-
-	switch {
-	case exists && common.HasObjectChanged(networkPolicy, fetched, &resourceMetadata):
-		r.log.V(1).Info("NetworkPolicy modified, updating", "name", networkPolicyName)
-		common.RemoveObsoleteAnnotations(networkPolicy, resourceMetadata)
-		if err := r.UpdateWithRetry(r.ctx, networkPolicy); err != nil {
-			return common.FromClientError(err, "failed to update network policy %s", networkPolicyName)
-		}
-		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "NetworkPolicy %s updated", networkPolicyName)
-	case !exists:
+	if !exists {
 		if err := r.Create(r.ctx, networkPolicy); err != nil {
 			return common.FromClientError(err, "failed to create network policy %s", networkPolicyName)
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "NetworkPolicy %s created", networkPolicyName)
-	default:
-		r.log.V(4).Info("NetworkPolicy already up-to-date", "name", networkPolicyName)
+		return nil
 	}
+
+	if externalSecretsConfigCreateRecon {
+		r.eventRecorder.Eventf(esc, corev1.EventTypeWarning, "ResourceAlreadyExists", "NetworkPolicy %s already exists", networkPolicyName)
+	}
+
+	if !common.HasObjectChanged(networkPolicy, fetched, &resourceMetadata) {
+		r.log.V(4).Info("NetworkPolicy already up-to-date", "name", networkPolicyName)
+		return nil
+	}
+
+	r.log.V(1).Info("NetworkPolicy modified, updating", "name", networkPolicyName)
+	common.RemoveObsoleteAnnotations(networkPolicy, resourceMetadata)
+	if err := r.UpdateWithRetry(r.ctx, networkPolicy); err != nil {
+		return common.FromClientError(err, "failed to update network policy %s", networkPolicyName)
+	}
+	r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "NetworkPolicy %s updated", networkPolicyName)
 
 	return nil
 }
@@ -170,26 +173,29 @@ func (r *Reconciler) createOrApplyNetworkPolicyFromAsset(esc *operatorv1alpha1.E
 		return common.FromClientError(err, "failed to check existence of network policy %s", networkPolicyName)
 	}
 
-	if exists && externalSecretsConfigCreateRecon {
-		r.eventRecorder.Eventf(esc, corev1.EventTypeWarning, "ResourceAlreadyExists", "NetworkPolicy %s already exists", networkPolicyName)
-	}
-
-	switch {
-	case exists && common.HasObjectChanged(networkPolicy, fetched, &resourceMetadata):
-		r.log.V(1).Info("NetworkPolicy modified, updating", "name", networkPolicyName)
-		common.RemoveObsoleteAnnotations(networkPolicy, resourceMetadata)
-		if err := r.UpdateWithRetry(r.ctx, networkPolicy); err != nil {
-			return common.FromClientError(err, "failed to update network policy %s", networkPolicyName)
-		}
-		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "NetworkPolicy %s updated", networkPolicyName)
-	case !exists:
+	if !exists {
 		if err := r.Create(r.ctx, networkPolicy); err != nil {
 			return common.FromClientError(err, "failed to create network policy %s", networkPolicyName)
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "NetworkPolicy %s created", networkPolicyName)
-	default:
-		r.log.V(4).Info("NetworkPolicy already up-to-date", "name", networkPolicyName)
+		return nil
 	}
+
+	if externalSecretsConfigCreateRecon {
+		r.eventRecorder.Eventf(esc, corev1.EventTypeWarning, "ResourceAlreadyExists", "NetworkPolicy %s already exists", networkPolicyName)
+	}
+
+	if !common.HasObjectChanged(networkPolicy, fetched, &resourceMetadata) {
+		r.log.V(4).Info("NetworkPolicy already up-to-date", "name", networkPolicyName)
+		return nil
+	}
+
+	r.log.V(1).Info("NetworkPolicy modified, updating", "name", networkPolicyName)
+	common.RemoveObsoleteAnnotations(networkPolicy, resourceMetadata)
+	if err := r.UpdateWithRetry(r.ctx, networkPolicy); err != nil {
+		return common.FromClientError(err, "failed to update network policy %s", networkPolicyName)
+	}
+	r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "NetworkPolicy %s updated", networkPolicyName)
 
 	return nil
 }
@@ -270,27 +276,31 @@ func (r *Reconciler) reconcileProxyEgressPolicy(esc *operatorv1alpha1.ExternalSe
 		}
 		return nil
 	}
-	if exists && recon {
-		r.eventRecorder.Eventf(esc, corev1.EventTypeWarning, "ResourceAlreadyExists", "proxy egress NetworkPolicy %s already exists", npName)
-	}
 
 	np := buildProxyEgressNetworkPolicy(r.proxyConfig, namespace, resourceMetadata)
-	switch {
-	case exists && common.HasObjectChanged(np, existing, &resourceMetadata):
-		r.log.V(1).Info("proxy egress NetworkPolicy modified, updating", "name", npName)
-		common.RemoveObsoleteAnnotations(np, resourceMetadata)
-		if err := r.UpdateWithRetry(r.ctx, np); err != nil {
-			return common.FromClientError(err, "failed to update proxy egress network policy %s", npName)
-		}
-		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "proxy egress NetworkPolicy %s updated", npName)
-	case !exists:
+	if !exists {
 		if err := r.Create(r.ctx, np); err != nil {
 			return common.FromClientError(err, "failed to create proxy egress network policy %s", npName)
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "proxy egress NetworkPolicy %s created", npName)
-	default:
-		r.log.V(4).Info("proxy egress NetworkPolicy already up-to-date", "name", npName)
+		return nil
 	}
+
+	if recon {
+		r.eventRecorder.Eventf(esc, corev1.EventTypeWarning, "ResourceAlreadyExists", "proxy egress NetworkPolicy %s already exists", npName)
+	}
+
+	if !common.HasObjectChanged(np, existing, &resourceMetadata) {
+		r.log.V(4).Info("proxy egress NetworkPolicy already up-to-date", "name", npName)
+		return nil
+	}
+
+	r.log.V(1).Info("proxy egress NetworkPolicy modified, updating", "name", npName)
+	common.RemoveObsoleteAnnotations(np, resourceMetadata)
+	if err := r.UpdateWithRetry(r.ctx, np); err != nil {
+		return common.FromClientError(err, "failed to update proxy egress network policy %s", npName)
+	}
+	r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "proxy egress NetworkPolicy %s updated", npName)
 
 	return nil
 }

@@ -70,6 +70,9 @@ func (r *Reconciler) createOrApplyDeploymentFromAsset(esc *operatorv1alpha1.Exte
 	externalSecretsConfigCreateRecon bool,
 ) error {
 	deployment, trustedCAErr := r.getDeploymentObject(assetName, esc, resourceMetadata)
+	// trustedCABundle may fail in getDeploymentObject (e.g. missing ConfigMap) while still
+	// returning a deployment with the stale user-ca-bundle mount removed. Apply that spec
+	// first, then return the error so status becomes Degraded and the reconcile requeues.
 	if deployment == nil {
 		return trustedCAErr
 	}
@@ -80,29 +83,35 @@ func (r *Reconciler) createOrApplyDeploymentFromAsset(esc *operatorv1alpha1.Exte
 	if err != nil {
 		return common.FromClientError(err, "failed to check %s deployment resource already exists", deploymentName)
 	}
-	if exist && externalSecretsConfigCreateRecon {
-		r.eventRecorder.Eventf(esc, corev1.EventTypeWarning, "ResourceAlreadyExists", "%s deployment resource already exists", deploymentName)
-	}
-	switch {
-	case exist && common.HasObjectChanged(deployment, fetched, &resourceMetadata):
-		r.log.V(1).Info("deployment has been modified, updating to desired state", "name", deploymentName)
-		common.RemoveObsoleteAnnotations(deployment, resourceMetadata)
-		if err := r.UpdateWithRetry(r.ctx, deployment); err != nil {
-			return common.FromClientError(err, "failed to update %s deployment resource", deploymentName)
-		}
-		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "deployment resource %s updated", deploymentName)
-	case !exist:
+
+	if !exist {
 		if err := r.Create(r.ctx, deployment); err != nil {
 			return common.FromClientError(err, "failed to create %s deployment resource", deploymentName)
 		}
 		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "deployment resource %s created", deploymentName)
-	default:
-		r.log.V(4).Info("deployment resource already exists and is in expected state", "name", deploymentName)
+		return trustedCAErr
 	}
+
+	if externalSecretsConfigCreateRecon {
+		r.eventRecorder.Eventf(esc, corev1.EventTypeWarning, "ResourceAlreadyExists", "%s deployment resource already exists", deploymentName)
+	}
+
+	if !common.HasObjectChanged(deployment, fetched, &resourceMetadata) {
+		r.log.V(4).Info("deployment resource already exists and is in expected state", "name", deploymentName)
+		return trustedCAErr
+	}
+
+	r.log.V(1).Info("deployment has been modified, updating to desired state", "name", deploymentName)
+	common.RemoveObsoleteAnnotations(deployment, resourceMetadata)
+	if err := r.UpdateWithRetry(r.ctx, deployment); err != nil {
+		return common.FromClientError(err, "failed to update %s deployment resource", deploymentName)
+	}
+	r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "deployment resource %s updated", deploymentName)
 
 	if trustedCAErr != nil {
 		return trustedCAErr
 	}
+
 	return nil
 }
 
@@ -233,7 +242,7 @@ func (r *Reconciler) updateResourceRequirement(deployment *appsv1.Deployment, es
 	switch {
 	case esc.Spec.ApplicationConfig.Resources != nil:
 		esc.Spec.ApplicationConfig.Resources.DeepCopyInto(&rscReqs)
-	case r.esm != nil && r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Resources != nil:
+	case r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Resources != nil:
 		r.esm.Spec.GlobalConfig.Resources.DeepCopyInto(&rscReqs)
 	default:
 		return nil
@@ -265,7 +274,7 @@ func (r *Reconciler) updateNodeSelector(deployment *appsv1.Deployment, esc *oper
 
 	if esc.Spec.ApplicationConfig.NodeSelector != nil {
 		nodeSelector = esc.Spec.ApplicationConfig.NodeSelector
-	} else if r.esm != nil && r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.NodeSelector != nil {
+	} else if r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.NodeSelector != nil {
 		nodeSelector = r.esm.Spec.GlobalConfig.NodeSelector
 	}
 
@@ -287,7 +296,7 @@ func (r *Reconciler) updateAffinityRules(deployment *appsv1.Deployment, esc *ope
 
 	if esc.Spec.ApplicationConfig.Affinity != nil {
 		affinity = esc.Spec.ApplicationConfig.Affinity
-	} else if r.esm != nil && r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Affinity != nil {
+	} else if r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Affinity != nil {
 		affinity = r.esm.Spec.GlobalConfig.Affinity
 	}
 
@@ -309,7 +318,7 @@ func (r *Reconciler) updatePodTolerations(deployment *appsv1.Deployment, esc *op
 
 	if esc.Spec.ApplicationConfig.Tolerations != nil {
 		tolerations = esc.Spec.ApplicationConfig.Tolerations
-	} else if r.esm != nil && r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Tolerations != nil {
+	} else if r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Tolerations != nil {
 		tolerations = r.esm.Spec.GlobalConfig.Tolerations
 	}
 

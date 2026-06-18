@@ -153,7 +153,7 @@ func (r *Reconciler) resolveProxyConfiguration(esc *operatorv1alpha1.ExternalSec
 		esc.Spec.ApplicationConfig.Proxy.DeepCopyInto(proxyConfig)
 	}
 
-	if r.esm != nil && r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Proxy != nil {
+	if r.esm.Spec.GlobalConfig != nil && r.esm.Spec.GlobalConfig.Proxy != nil {
 		mergeProxyConfigFields(proxyConfig, r.esm.Spec.GlobalConfig.Proxy)
 	}
 	mergeProxyConfigFields(proxyConfig, olmProxyConfig())

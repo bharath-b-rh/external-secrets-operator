@@ -484,10 +484,7 @@ func (r *Reconciler) reconcileDeploymentFailureResult(
 	errUpdate := r.updateStatusConditionsOnFailure(esc, degradedCond, readyCond, isFatal, reconcileErr)
 
 	if isFatal {
-		if errUpdate != nil {
-			return ctrl.Result{}, errUpdate
-		}
-		return ctrl.Result{}, reconcileErr
+		return ctrl.Result{}, errUpdate
 	}
 	if isUserConfig {
 		return userConfigurationFailureResult(reconcileErr, errUpdate)
