@@ -47,6 +47,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
+	externalsecrets "github.com/openshift/external-secrets-operator/pkg/controller/external_secrets"
 	"github.com/openshift/external-secrets-operator/test/utils"
 )
 
@@ -515,10 +516,13 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 		It("should use default revisionHistoryLimit when not configured", func() {
 			By("Verifying default revisionHistoryLimit (10) for ExternalSecretsCoreController deployment")
 			Eventually(func(g Gomega) {
-				deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, "external-secrets", metav1.GetOptions{})
+				deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, externalsecrets.OperandCoreControllerDeployment, metav1.GetOptions{})
 				g.Expect(err).NotTo(HaveOccurred(), "should get external-secrets deployment")
 				g.Expect(deployment.Spec.RevisionHistoryLimit).NotTo(BeNil(), "revisionHistoryLimit should be set")
 				g.Expect(*deployment.Spec.RevisionHistoryLimit).To(Equal(int32(10)), "revisionHistoryLimit should default to 10 when not configured")
+				hasArg, found := deploymentContainerHasArg(deployment, externalsecrets.OperandCoreControllerContainer, externalsecrets.UnsafeAllowGenericTargetsArg)
+				g.Expect(found).To(BeTrue(), "core controller container should exist")
+				g.Expect(hasArg).To(BeFalse(), "unsafe-allow-generic-targets should not be set when the feature is not configured")
 			}, time.Minute, 5*time.Second).Should(Succeed())
 
 			By("Verifying default revisionHistoryLimit (10) for Webhook deployment")
@@ -583,6 +587,149 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 				g.Expect(deployment.Spec.RevisionHistoryLimit).NotTo(BeNil(), "revisionHistoryLimit should be set")
 				g.Expect(*deployment.Spec.RevisionHistoryLimit).To(Equal(certControllerLimit), "revisionHistoryLimit should be %d for cert-controller", certControllerLimit)
 			}, time.Minute, 5*time.Second).Should(Succeed())
+		})
+	})
+
+	Context("UnsafeAllowGenericTargets feature", func() {
+		var (
+			originalFeatures []operatorv1alpha1.Feature
+			hadFeatures      bool
+		)
+
+		updateFeatureMode := func(mode operatorv1alpha1.Mode) {
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				esm := &operatorv1alpha1.ExternalSecretsManager{}
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esm); err != nil {
+					return err
+				}
+				updated := esm.DeepCopy()
+				updated.Spec.Features = []operatorv1alpha1.Feature{
+					{Name: operatorv1alpha1.UnsafeAllowGenericTargets, Mode: mode},
+				}
+				return runtimeClient.Update(ctx, updated)
+			})
+			Expect(err).NotTo(HaveOccurred(), "should update ExternalSecretsManager feature mode to %q", mode)
+		}
+
+		clearFeatures := func() {
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				esm := &operatorv1alpha1.ExternalSecretsManager{}
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esm); err != nil {
+					return err
+				}
+				updated := esm.DeepCopy()
+				updated.Spec.Features = nil
+				return runtimeClient.Update(ctx, updated)
+			})
+			Expect(err).NotTo(HaveOccurred(), "should clear ExternalSecretsManager features")
+		}
+
+		waitForCoreControllerArg := func(present bool) {
+			Eventually(func(g Gomega) {
+				deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, externalsecrets.OperandCoreControllerDeployment, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred(), "should get external-secrets deployment")
+				hasArg, found := deploymentContainerHasArg(deployment, externalsecrets.OperandCoreControllerContainer, externalsecrets.UnsafeAllowGenericTargetsArg)
+				g.Expect(found).To(BeTrue(), "core controller container should exist")
+				if present {
+					g.Expect(hasArg).To(BeTrue(), "core controller deployment should include %q", externalsecrets.UnsafeAllowGenericTargetsArg)
+				} else {
+					g.Expect(hasArg).To(BeFalse(), "core controller deployment should not include %q", externalsecrets.UnsafeAllowGenericTargetsArg)
+				}
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		}
+
+		BeforeAll(func() {
+			esm := &operatorv1alpha1.ExternalSecretsManager{}
+			Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esm)).To(Succeed(), "should get ExternalSecretsManager")
+			if len(esm.Spec.Features) > 0 {
+				hadFeatures = true
+				originalFeatures = append([]operatorv1alpha1.Feature(nil), esm.Spec.Features...)
+			}
+		})
+
+		AfterAll(func() {
+			By("Restoring original ExternalSecretsManager features")
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				esm := &operatorv1alpha1.ExternalSecretsManager{}
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esm); err != nil {
+					return err
+				}
+				updated := esm.DeepCopy()
+				if hadFeatures {
+					updated.Spec.Features = append([]operatorv1alpha1.Feature(nil), originalFeatures...)
+				} else {
+					updated.Spec.Features = nil
+				}
+				return runtimeClient.Update(ctx, updated)
+			})
+			Expect(err).NotTo(HaveOccurred(), "should restore ExternalSecretsManager features")
+
+			Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, operandNamespace, []string{
+				operandCoreControllerPodPrefix,
+				operandCertControllerPodPrefix,
+				operandWebhookPodPrefix,
+			})).To(Succeed(), "operand pods should be ready after restoring ExternalSecretsManager features")
+		})
+
+		It("should add unsafe-allow-generic-targets arg to the core controller when feature is enabled", func() {
+			By("Enabling UnsafeAllowGenericTargets on ExternalSecretsManager")
+			updateFeatureMode(operatorv1alpha1.Enabled)
+
+			By("Waiting for operand pods to be ready after feature enable")
+			Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, operandNamespace, []string{
+				operandCoreControllerPodPrefix,
+				operandCertControllerPodPrefix,
+				operandWebhookPodPrefix,
+			})).To(Succeed(), "operand pods should be ready after enabling UnsafeAllowGenericTargets")
+
+			By("Verifying the core controller deployment includes the feature arg")
+			waitForCoreControllerArg(true)
+
+			By("Verifying the feature arg is not added to webhook or cert-controller deployments")
+			for _, tc := range []struct {
+				deploymentName string
+				containerName  string
+			}{
+				{deploymentName: externalsecrets.OperandWebhookDeployment, containerName: externalsecrets.OperandWebhookContainer},
+				{deploymentName: externalsecrets.OperandCertControllerDeployment, containerName: externalsecrets.OperandCertControllerContainer},
+			} {
+				deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, tc.deploymentName, metav1.GetOptions{})
+				Expect(err).NotTo(HaveOccurred(), "should get %s deployment", tc.deploymentName)
+				hasArg, found := deploymentContainerHasArg(deployment, tc.containerName, externalsecrets.UnsafeAllowGenericTargetsArg)
+				Expect(found).To(BeTrue(), "%s container %q should exist", tc.deploymentName, tc.containerName)
+				Expect(hasArg).To(BeFalse(),
+					"%s deployment should not include %q", tc.deploymentName, externalsecrets.UnsafeAllowGenericTargetsArg)
+			}
+		})
+
+		It("should remove unsafe-allow-generic-targets arg when feature is disabled", func() {
+			By("Disabling UnsafeAllowGenericTargets on ExternalSecretsManager")
+			updateFeatureMode(operatorv1alpha1.Disabled)
+
+			By("Waiting for operand pods to be ready after feature disable")
+			Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, operandNamespace, []string{
+				operandCoreControllerPodPrefix,
+				operandCertControllerPodPrefix,
+				operandWebhookPodPrefix,
+			})).To(Succeed(), "operand pods should be ready after disabling UnsafeAllowGenericTargets")
+
+			By("Verifying the core controller deployment no longer includes the feature arg")
+			waitForCoreControllerArg(false)
+		})
+
+		It("should remove unsafe-allow-generic-targets arg when feature is cleared from ExternalSecretsManager", func() {
+			By("Clearing features from ExternalSecretsManager")
+			clearFeatures()
+
+			By("Waiting for operand pods to be ready after feature removal")
+			Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, operandNamespace, []string{
+				operandCoreControllerPodPrefix,
+				operandCertControllerPodPrefix,
+				operandWebhookPodPrefix,
+			})).To(Succeed(), "operand pods should be ready after clearing ExternalSecretsManager features")
+
+			By("Verifying the core controller deployment no longer includes the feature arg")
+			waitForCoreControllerArg(false)
 		})
 	})
 

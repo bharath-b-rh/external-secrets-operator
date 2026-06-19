@@ -99,10 +99,10 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/apiserver v0.35.6 // indirect
 	k8s.io/component-base v0.35.6 // indirect
-	k8s.io/component-helpers v0.35.0 // indirect
+	k8s.io/component-helpers v0.35.6 // indirect
 	k8s.io/controller-manager v0.35.6 // indirect
 	k8s.io/kube-openapi v0.0.0-20260317180543-43fb72c5454a // indirect
-	k8s.io/kubelet v0.32.1 // indirect
+	k8s.io/kubelet v0.32.2 // indirect
 	k8s.io/kubernetes v1.35.6 // indirect
 	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2 // indirect
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.34.0 // indirect

@@ -3,6 +3,7 @@ package external_secrets
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -78,11 +79,94 @@ func escWithComponentConfigs(configs ...v1alpha1.ComponentConfig) func(*v1alpha1
 	}
 }
 
+func containerArgs(deployment *appsv1.Deployment, containerName string) []string {
+	if deployment == nil {
+		return nil
+	}
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		if container.Name == containerName {
+			return container.Args
+		}
+	}
+	return nil
+}
+
+func validateContainerHasArg(containerName, arg string) func(*testing.T, *appsv1.Deployment) {
+	return func(t *testing.T, deployment *appsv1.Deployment) {
+		t.Helper()
+		args := containerArgs(deployment, containerName)
+		if args == nil {
+			t.Fatalf("container %q not found in deployment", containerName)
+		}
+		if !slices.Contains(args, arg) {
+			t.Errorf("container %q args = %v, want to contain %q", containerName, args, arg)
+		}
+	}
+}
+
+func validateContainerMissingArg(containerName, arg string) func(*testing.T, *appsv1.Deployment) {
+	return func(t *testing.T, deployment *appsv1.Deployment) {
+		t.Helper()
+		args := containerArgs(deployment, containerName)
+		if args == nil {
+			t.Fatalf("container %q not found in deployment", containerName)
+		}
+		if slices.Contains(args, arg) {
+			t.Errorf("container %q args = %v, should not contain %q", containerName, args, arg)
+		}
+	}
+}
+
+func TestUpdateOptionalFeatures(t *testing.T) {
+	enabledESM := &v1alpha1.ExternalSecretsManager{
+		Spec: v1alpha1.ExternalSecretsManagerSpec{
+			Features: []v1alpha1.Feature{
+				{Name: v1alpha1.UnsafeAllowGenericTargets, Mode: v1alpha1.Enabled},
+			},
+		},
+	}
+	disabledESM := &v1alpha1.ExternalSecretsManager{
+		Spec: v1alpha1.ExternalSecretsManagerSpec{
+			Features: []v1alpha1.Feature{
+				{Name: v1alpha1.UnsafeAllowGenericTargets, Mode: v1alpha1.Disabled},
+			},
+		},
+	}
+
+	tests := []struct {
+		name              string
+		esm               *v1alpha1.ExternalSecretsManager
+		supportedFeatures []v1alpha1.FeatureName
+		wantArg           bool
+	}{
+		{name: "nil esm", esm: nil, supportedFeatures: []v1alpha1.FeatureName{v1alpha1.UnsafeAllowGenericTargets}, wantArg: false},
+		{name: "empty features", esm: &v1alpha1.ExternalSecretsManager{}, supportedFeatures: []v1alpha1.FeatureName{v1alpha1.UnsafeAllowGenericTargets}, wantArg: false},
+		{name: "enabled feature supported by deployment", esm: enabledESM, supportedFeatures: []v1alpha1.FeatureName{v1alpha1.UnsafeAllowGenericTargets}, wantArg: true},
+		{name: "disabled feature", esm: disabledESM, supportedFeatures: []v1alpha1.FeatureName{v1alpha1.UnsafeAllowGenericTargets}, wantArg: false},
+		{name: "enabled feature not supported by deployment", esm: enabledESM, supportedFeatures: nil, wantArg: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := []string{"--existing-arg=true"}
+			r := testReconciler(t)
+			r.esm = tt.esm
+			r.updateOptionalFeatures(&args, tt.supportedFeatures)
+
+			hasArg := slices.Contains(args, UnsafeAllowGenericTargetsArg)
+			if hasArg != tt.wantArg {
+				t.Errorf("updateOptionalFeatures() arg present = %v, want %v (args=%v)", hasArg, tt.wantArg, args)
+			}
+		})
+	}
+}
+
 func TestCreateOrApplyDeployments(t *testing.T) {
 	tests := []struct {
 		name                        string
 		preReq                      func(*Reconciler, *fakes.FakeCtrlClient, **appsv1.Deployment)
 		updateExternalSecretsConfig func(*v1alpha1.ExternalSecretsConfig)
+		externalSecretsManager      *v1alpha1.ExternalSecretsManager
 		validateDeployment          func(*testing.T, *appsv1.Deployment)
 		skipEnvVar                  bool
 		wantErr                     string
@@ -655,6 +739,64 @@ func TestCreateOrApplyDeployments(t *testing.T) {
 				validateRevisionHistory(7)(t, d)
 			},
 		},
+		{
+			name: "deployment includes unsafe allow generic targets arg when feature enabled",
+			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient, capturedDeployment **appsv1.Deployment) {
+				m.ExistsCalls(func(ctx context.Context, ns types.NamespacedName, obj client.Object) (bool, error) {
+					if o, ok := obj.(*appsv1.Deployment); ok {
+						deployment := testDeployment(controllerDeploymentAssetName)
+						deployment.DeepCopyInto(o)
+					}
+					return true, nil
+				})
+				m.UpdateWithRetryCalls(func(ctx context.Context, obj client.Object, _ ...client.UpdateOption) error {
+					if o, ok := obj.(*appsv1.Deployment); ok && o.Name == externalsecretsCommonName {
+						*capturedDeployment = o.DeepCopy()
+					}
+					return nil
+				})
+			},
+			updateExternalSecretsConfig: func(i *v1alpha1.ExternalSecretsConfig) {
+				i.Status.ExternalSecretsImage = commontest.TestExternalSecretsImageName
+			},
+			externalSecretsManager: &v1alpha1.ExternalSecretsManager{
+				Spec: v1alpha1.ExternalSecretsManagerSpec{
+					Features: []v1alpha1.Feature{
+						{Name: v1alpha1.UnsafeAllowGenericTargets, Mode: v1alpha1.Enabled},
+					},
+				},
+			},
+			validateDeployment: validateContainerHasArg(OperandCoreControllerContainer, UnsafeAllowGenericTargetsArg),
+		},
+		{
+			name: "deployment omits unsafe allow generic targets arg when feature disabled",
+			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient, capturedDeployment **appsv1.Deployment) {
+				m.ExistsCalls(func(ctx context.Context, ns types.NamespacedName, obj client.Object) (bool, error) {
+					if o, ok := obj.(*appsv1.Deployment); ok {
+						deployment := testDeployment(controllerDeploymentAssetName)
+						deployment.DeepCopyInto(o)
+					}
+					return true, nil
+				})
+				m.UpdateWithRetryCalls(func(ctx context.Context, obj client.Object, _ ...client.UpdateOption) error {
+					if o, ok := obj.(*appsv1.Deployment); ok && o.Name == externalsecretsCommonName {
+						*capturedDeployment = o.DeepCopy()
+					}
+					return nil
+				})
+			},
+			updateExternalSecretsConfig: func(i *v1alpha1.ExternalSecretsConfig) {
+				i.Status.ExternalSecretsImage = commontest.TestExternalSecretsImageName
+			},
+			externalSecretsManager: &v1alpha1.ExternalSecretsManager{
+				Spec: v1alpha1.ExternalSecretsManagerSpec{
+					Features: []v1alpha1.Feature{
+						{Name: v1alpha1.UnsafeAllowGenericTargets, Mode: v1alpha1.Disabled},
+					},
+				},
+			},
+			validateDeployment: validateContainerMissingArg(OperandCoreControllerContainer, UnsafeAllowGenericTargetsArg),
+		},
 	}
 
 	for _, tt := range tests {
@@ -671,6 +813,9 @@ func TestCreateOrApplyDeployments(t *testing.T) {
 
 			if tt.updateExternalSecretsConfig != nil {
 				tt.updateExternalSecretsConfig(externalsecrets)
+			}
+			if tt.externalSecretsManager != nil {
+				r.esm = tt.externalSecretsManager
 			}
 			if !tt.skipEnvVar {
 				t.Setenv("RELATED_IMAGE_EXTERNAL_SECRETS", commontest.TestExternalSecretsImageName)
@@ -1752,6 +1897,26 @@ func TestApplyUserDeploymentConfigsWithOverrideEnv(t *testing.T) {
 					t.Errorf("applyUserDeploymentConfigs() RevisionHistoryLimit = %d, want %d",
 						*deployment.Spec.RevisionHistoryLimit, *tt.componentConfig.DeploymentConfigs.RevisionHistoryLimit)
 				}
+			}
+		})
+	}
+}
+
+func TestNormalizeDurationArg(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "5m", want: "5m0s"},
+		{in: "5m0s", want: "5m0s"},
+		{in: "15m0s", want: "15m0s"},
+		{in: "1h", want: "1h0m0s"},
+		{in: "not-a-duration", want: "not-a-duration"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := normalizeDurationArg(tt.in); got != tt.want {
+				t.Errorf("normalizeDurationArg(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}

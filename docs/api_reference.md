@@ -391,6 +391,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `globalConfig` _[GlobalConfig](#globalconfig)_ | globalConfig is for configuring the behavior of deployments that are managed by external secrets-operator. |  |  |
+| `features` _[Feature](#feature) array_ | features configures optional capabilities across deployments managed by the external-secrets-operator,<br />including the operator itself and any current or future operands.<br />Each entry is uniquely identified by name and can be individually enabled or disabled.<br />This field can have a maximum of 1 entry. |  | MaxItems: 1 <br />MinItems: 0 <br /> |
 
 
 #### ExternalSecretsManagerStatus
@@ -408,6 +409,39 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `controllerStatuses` _[ControllerStatus](#controllerstatus) array_ | controllerStatuses holds the observed conditions of the controllers part of the operator. |  |  |
 | `lastTransitionTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.32/#time-v1-meta)_ | lastTransitionTime is the last time the condition transitioned from one status to another. |  | Format: date-time <br />Type: string <br /> |
+
+
+#### Feature
+
+
+
+Feature configures an optional capability that is applied by the external-secrets-operator across its managed deployments.
+
+
+
+_Appears in:_
+- [ExternalSecretsManagerSpec](#externalsecretsmanagerspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _[FeatureName](#featurename)_ | name identifies the optional feature to configure.<br />Currently, the only supported value is UnsafeAllowGenericTargets. |  | Enum: [UnsafeAllowGenericTargets] <br /> |
+| `mode` _[Mode](#mode)_ | mode controls whether the feature is active.<br />When set to Enabled, the operator applies the configuration associated with the named feature to the relevant managed deployments.<br />For UnsafeAllowGenericTargets, this passes the `--unsafe-allow-generic-targets` flag to the external-secrets core controller,<br />allowing ExternalSecret resources to target Kubernetes resources other than Secrets (for example, ConfigMaps or custom resources).<br />Warning: Generic targets require additional RBAC permissions on the affected operand; enabling this feature without the appropriate permissions will cause reconciliation failures. | Disabled | Enum: [Enabled Disabled] <br /> |
+
+
+#### FeatureName
+
+_Underlying type:_ _string_
+
+FeatureName identifies an optional feature that can be configured on the ExternalSecretsManager and applied by the external-secrets-operator.
+
+
+
+_Appears in:_
+- [Feature](#feature)
+
+| Field | Description |
+| --- | --- |
+| `UnsafeAllowGenericTargets` | UnsafeAllowGenericTargets configures the external-secrets core controller to run with the `--unsafe-allow-generic-targets` startup flag,<br />which allows ExternalSecret resources to sync data into Kubernetes resources other than Secrets.<br /> |
 
 
 #### GlobalConfig
@@ -460,6 +494,7 @@ Mode indicates the operational state of the optional features.
 _Appears in:_
 - [BitwardenSecretManagerProvider](#bitwardensecretmanagerprovider)
 - [CertManagerConfig](#certmanagerconfig)
+- [Feature](#feature)
 
 | Field | Description |
 | --- | --- |

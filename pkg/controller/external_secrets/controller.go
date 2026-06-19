@@ -311,8 +311,21 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 	}
 
-	// Watch ExternalSecretsManager
-	mgrBuilder.Watches(&operatorv1alpha1.ExternalSecretsManager{}, handler.EnqueueRequestsFromMapFunc(mapFunc), withIgnoreStatusUpdatePredicates)
+	// Watch ExternalSecretsManager spec changes (features, globalConfig). ESM is not
+	// labeled app=external-secrets, so it must not use the managedResources predicate.
+	mgrBuilder.Watches(
+		&operatorv1alpha1.ExternalSecretsManager{},
+		handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+			if _, ok := obj.(*operatorv1alpha1.ExternalSecretsManager); !ok {
+				return nil
+			}
+			r.log.V(4).Info("received ExternalSecretsManager reconcile event", "name", obj.GetName())
+			return []reconcile.Request{{
+				NamespacedName: types.NamespacedName{Name: common.ExternalSecretsConfigObjectName},
+			}}
+		}),
+		builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+	)
 
 	// Conditionally watch Certificate if cert-manager is installed
 	// Note: Certificate is already declared in buildCacheObjectList(), this just sets up the watch
@@ -411,65 +424,116 @@ func (r *Reconciler) processReconcileRequest(esc *operatorv1alpha1.ExternalSecre
 		createRecon = true
 	}
 
-	var errUpdate error = nil
 	observedGeneration := esc.GetGeneration()
 	err := r.reconcileExternalSecretsDeployment(esc, createRecon)
 	if err != nil {
-		r.log.Error(err, "failed to reconcile external-secrets deployment", "request", req)
-		isFatal := common.IsIrrecoverableError(err)
-
-		degradedCond := metav1.Condition{
-			Type:               operatorv1alpha1.Degraded,
-			ObservedGeneration: observedGeneration,
-		}
-		readyCond := metav1.Condition{
-			Type:               operatorv1alpha1.Ready,
-			ObservedGeneration: observedGeneration,
-		}
-
-		if isFatal {
-			degradedCond.Status = metav1.ConditionTrue
-			degradedCond.Reason = operatorv1alpha1.ReasonFailed
-			degradedCond.Message = fmt.Sprintf("reconciliation failed with irrecoverable error, not retrying: %v", err)
-
-			readyCond.Status = metav1.ConditionFalse
-			readyCond.Reason = operatorv1alpha1.ReasonReady
-		} else {
-			degradedCond.Status = metav1.ConditionFalse
-			degradedCond.Reason = operatorv1alpha1.ReasonReady
-
-			readyCond.Status = metav1.ConditionFalse
-			readyCond.Reason = operatorv1alpha1.ReasonInProgress
-			readyCond.Message = fmt.Sprintf("reconciliation failed, retrying: %v", err)
-		}
-
-		// Set both conditions atomically before updating status
-		degradedChanged := apimeta.SetStatusCondition(&esc.Status.Conditions, degradedCond)
-		readyChanged := apimeta.SetStatusCondition(&esc.Status.Conditions, readyCond)
-
-		if degradedChanged || readyChanged {
-			r.log.V(2).Info("updating externalsecretsconfig conditions on error",
-				"namespace", esc.GetNamespace(),
-				"name", esc.GetName(),
-				"degradedChanged", degradedChanged,
-				"readyChanged", readyChanged,
-				"isFatal", isFatal,
-				"error", err)
-			errUpdate = r.updateCondition(esc, err)
-		}
-
-		if isFatal {
-			return ctrl.Result{}, errUpdate
-		}
-		// For recoverable errors, either requeue manually or return error, not both
-		// If status update failed, return the update error; otherwise requeue with nil error
-		if errUpdate != nil {
-			return ctrl.Result{}, errUpdate
-		}
-		return ctrl.Result{RequeueAfter: common.DefaultRequeueTime}, nil
+		return r.reconcileDeploymentFailureResult(esc, req, err, observedGeneration)
 	}
 
-	// Successful reconciliation
+	return r.reconcileDeploymentSuccessResult(esc, observedGeneration)
+}
+
+func (r *Reconciler) reconcileDeploymentFailureResult(
+	esc *operatorv1alpha1.ExternalSecretsConfig,
+	req types.NamespacedName,
+	reconcileErr error,
+	observedGeneration int64,
+) (ctrl.Result, error) {
+	r.log.Error(reconcileErr, "failed to reconcile external-secrets deployment", "request", req)
+
+	isFatal := common.IsIrrecoverableError(reconcileErr)
+	isUserConfig := common.IsUserConfigurationError(reconcileErr)
+
+	degradedCond, readyCond := deploymentFailureConditions(observedGeneration, reconcileErr, isFatal, isUserConfig)
+
+	errUpdate := r.updateStatusConditionsOnFailure(esc, degradedCond, readyCond, isFatal, reconcileErr)
+
+	if isFatal {
+		return ctrl.Result{}, errUpdate
+	}
+	if isUserConfig {
+		return userConfigurationFailureResult(reconcileErr, errUpdate)
+	}
+	if errUpdate != nil {
+		return ctrl.Result{}, errUpdate
+	}
+	return ctrl.Result{RequeueAfter: common.DefaultRequeueTime}, nil
+}
+
+func deploymentFailureConditions(
+	observedGeneration int64,
+	reconcileErr error,
+	isFatal, isUserConfig bool,
+) (degradedCond, readyCond metav1.Condition) {
+	degradedCond = metav1.Condition{
+		Type:               operatorv1alpha1.Degraded,
+		ObservedGeneration: observedGeneration,
+	}
+	readyCond = metav1.Condition{
+		Type:               operatorv1alpha1.Ready,
+		ObservedGeneration: observedGeneration,
+	}
+
+	if isFatal || isUserConfig {
+		degradedCond.Status = metav1.ConditionTrue
+		degradedCond.Reason = operatorv1alpha1.ReasonFailed
+		switch {
+		case isFatal:
+			degradedCond.Message = fmt.Sprintf("reconciliation failed with irrecoverable error, not retrying: %v", reconcileErr)
+		case isUserConfig:
+			degradedCond.Message = fmt.Sprintf("user configuration is invalid: %v", reconcileErr)
+		}
+		readyCond.Status = metav1.ConditionFalse
+		readyCond.Reason = operatorv1alpha1.ReasonFailed
+		readyCond.Message = degradedCond.Message
+		return degradedCond, readyCond
+	}
+
+	degradedCond.Status = metav1.ConditionFalse
+	degradedCond.Reason = operatorv1alpha1.ReasonReady
+	readyCond.Status = metav1.ConditionFalse
+	readyCond.Reason = operatorv1alpha1.ReasonInProgress
+	readyCond.Message = fmt.Sprintf("reconciliation failed, retrying: %v", reconcileErr)
+	return degradedCond, readyCond
+}
+
+func userConfigurationFailureResult(reconcileErr error, errUpdate error) (ctrl.Result, error) {
+	if errUpdate != nil {
+		return ctrl.Result{}, errUpdate
+	}
+	// Existing referenced objects are watched via resourceVersion; wait for user fixes instead of polling.
+	// NotFound still requeues because watch events are not received for unmanaged objects until reconciled once.
+	if common.IsUserConfigurationNotFound(reconcileErr) {
+		return ctrl.Result{RequeueAfter: common.DefaultRequeueTime}, nil
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *Reconciler) updateStatusConditionsOnFailure(
+	esc *operatorv1alpha1.ExternalSecretsConfig,
+	degradedCond, readyCond metav1.Condition,
+	isFatal bool,
+	reconcileErr error,
+) error {
+	degradedChanged := apimeta.SetStatusCondition(&esc.Status.Conditions, degradedCond)
+	readyChanged := apimeta.SetStatusCondition(&esc.Status.Conditions, readyCond)
+	if !degradedChanged && !readyChanged {
+		return nil
+	}
+	r.log.V(2).Info("updating externalsecretsconfig conditions on error",
+		"namespace", esc.GetNamespace(),
+		"name", esc.GetName(),
+		"degradedChanged", degradedChanged,
+		"readyChanged", readyChanged,
+		"isFatal", isFatal,
+		"error", reconcileErr)
+	return r.updateCondition(esc, reconcileErr)
+}
+
+func (r *Reconciler) reconcileDeploymentSuccessResult(
+	esc *operatorv1alpha1.ExternalSecretsConfig,
+	observedGeneration int64,
+) (ctrl.Result, error) {
 	degradedCond := metav1.Condition{
 		Type:               operatorv1alpha1.Degraded,
 		Status:             metav1.ConditionFalse,
@@ -484,19 +548,18 @@ func (r *Reconciler) processReconcileRequest(esc *operatorv1alpha1.ExternalSecre
 		ObservedGeneration: observedGeneration,
 	}
 
-	// Set both conditions atomically before updating status on success
 	degradedChanged := apimeta.SetStatusCondition(&esc.Status.Conditions, degradedCond)
 	readyChanged := apimeta.SetStatusCondition(&esc.Status.Conditions, readyCond)
-
-	if degradedChanged || readyChanged {
-		r.log.V(2).Info("updating externalsecretsconfig conditions on successful reconciliation",
-			"namespace", esc.GetNamespace(),
-			"name", esc.GetName(),
-			"degradedChanged", degradedChanged,
-			"readyChanged", readyChanged)
-		errUpdate = r.updateCondition(esc, nil)
+	if !degradedChanged && !readyChanged {
+		return ctrl.Result{}, nil
 	}
 
+	r.log.V(2).Info("updating externalsecretsconfig conditions on successful reconciliation",
+		"namespace", esc.GetNamespace(),
+		"name", esc.GetName(),
+		"degradedChanged", degradedChanged,
+		"readyChanged", readyChanged)
+	errUpdate := r.updateCondition(esc, nil)
 	return ctrl.Result{}, errUpdate
 }
 

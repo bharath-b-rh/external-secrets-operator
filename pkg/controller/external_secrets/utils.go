@@ -51,11 +51,11 @@ func (r *Reconciler) updateCondition(esc *operatorv1alpha1.ExternalSecretsConfig
 	if err := r.updateStatus(r.ctx, esc); err != nil {
 		errUpdate := fmt.Errorf("failed to update %s/%s status: %w", esc.GetNamespace(), esc.GetName(), err)
 		if prependErr != nil {
-			return utilerrors.NewAggregate([]error{err, errUpdate})
+			return utilerrors.NewAggregate([]error{prependErr, errUpdate})
 		}
 		return errUpdate
 	}
-	return prependErr
+	return nil
 }
 
 // updateStatus is for updating the status subresource of externalsecretsconfigs.operator.openshift.io.
