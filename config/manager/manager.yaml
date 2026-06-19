@@ -82,9 +82,9 @@ spec:
           - name: OPERATOR_IMAGE_VERSION
             value: 1.2.0
           - name: RELATED_IMAGE_EXTERNAL_SECRETS
-            value: ghcr.io/external-secrets/external-secrets:v2.6.0
+            value: ghcr.io/external-secrets/external-secrets:v2.5.0
           - name: OPERAND_EXTERNAL_SECRETS_IMAGE_VERSION
-            value: 2.6.0
+            value: 2.5.0
           - name: RELATED_IMAGE_BITWARDEN_SDK_SERVER
             value: ghcr.io/external-secrets/bitwarden-sdk-server:v0.6.0
           - name: BITWARDEN_SDK_SERVER_IMAGE_VERSION

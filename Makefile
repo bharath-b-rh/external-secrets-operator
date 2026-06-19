@@ -26,7 +26,7 @@ $(error IMG_VERSION '$(IMG_VERSION)' is not valid semver (expected: Major.Minor.
 endif
 
 # EXTERNAL_SECRETS_VERSION defines the external-secrets release version to fetch helm charts.
-EXTERNAL_SECRETS_VERSION ?= v2.6.0
+EXTERNAL_SECRETS_VERSION ?= v2.5.0
 
 # CHANNELS define the bundle channels used in the bundle.
 # Add a new line here if you would like to change its default config. (E.g CHANNELS = "candidate,fast,stable")
