@@ -85,10 +85,9 @@ func (r *Reconciler) createOrApplyDeploymentFromAsset(esc *operatorv1alpha1.Exte
 	}
 
 	if !exist {
-		if err := r.Create(r.ctx, deployment); err != nil {
-			return common.FromClientError(err, "failed to create %s deployment resource", deploymentName)
+		if err := r.createWithFallback(deployment, resourceMetadata, deploymentName, esc); err != nil {
+			return err
 		}
-		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "deployment resource %s created", deploymentName)
 		return trustedCAErr
 	}
 
@@ -108,11 +107,7 @@ func (r *Reconciler) createOrApplyDeploymentFromAsset(esc *operatorv1alpha1.Exte
 	}
 	r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "deployment resource %s updated", deploymentName)
 
-	if trustedCAErr != nil {
-		return trustedCAErr
-	}
-
-	return nil
+	return trustedCAErr
 }
 
 func (r *Reconciler) getDeploymentObject(assetName string, esc *operatorv1alpha1.ExternalSecretsConfig, resourceMetadata common.ResourceMetadata) (*appsv1.Deployment, error) {

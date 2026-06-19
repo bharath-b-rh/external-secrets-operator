@@ -48,6 +48,7 @@ import (
 
 	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
 	externalsecrets "github.com/openshift/external-secrets-operator/pkg/controller/external_secrets"
+	"github.com/openshift/external-secrets-operator/pkg/controller/common"
 	"github.com/openshift/external-secrets-operator/test/utils"
 )
 
@@ -63,10 +64,13 @@ const (
 
 const (
 	// test resource names
-	operatorNamespace   = common.ExternalSecretsOperatorCommonName
-	operandNamespace    = externalsecrets.OperandDefaultNamespace
-	operatorPodPrefix   = common.ExternalSecretsOperatorCommonName + "-controller-manager-"
-	testNamespacePrefix = "external-secrets-e2e-test-"
+	operatorNamespace              = common.ExternalSecretsOperatorCommonName
+	operandNamespace               = externalsecrets.OperandDefaultNamespace
+	operatorPodPrefix              = common.ExternalSecretsOperatorCommonName + "-controller-manager-"
+	operandCoreControllerPodPrefix = externalsecrets.OperandCoreControllerPodPrefix
+	operandCertControllerPodPrefix = externalsecrets.OperandCertControllerPodPrefix
+	operandWebhookPodPrefix        = externalsecrets.OperandWebhookPodPrefix
+	testNamespacePrefix            = "external-secrets-e2e-test-"
 )
 
 const (

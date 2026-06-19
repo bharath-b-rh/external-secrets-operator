@@ -124,8 +124,8 @@ func TestCreateOrApplyCertificates(t *testing.T) {
 				esc.Spec.ControllerConfig.CertProvider.CertManager.IssuerRef.Name = testIssuerName
 				esc.Spec.ControllerConfig.CertProvider.CertManager.IssuerRef.Kind = issuerKind
 			},
-			recon:                 false,
-			wantUserConfigErr:     true,
+			recon:                  false,
+			wantUserConfigErr:      true,
 			wantUserConfigNotFound: true,
 		},
 		{
