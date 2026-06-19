@@ -162,8 +162,9 @@ type ControllerConfig struct {
 
 	// trustedCABundle references a ConfigMap containing PEM-encoded CA certificates for the external-secrets core controller to trust when making outbound TLS connections.
 	// If specified, this bundle is used for all outbound TLS traffic, including connections to external secret management systems and configured proxies.
-	// The ConfigMap must exist in the external-secrets operand namespace.
-	// When omitted, external providers fall back to standard system certificates, while proxy connections use the OpenShift trusted CA bundle by default.
+	// The ConfigMap must exist in the external-secrets operand namespace and must not carry the CNO inject-trusted-cabundle label when proxy is configured.
+	// When omitted, external providers use standard system certificates. When proxy is configured, proxy TLS connections use the operator-managed
+	// OpenShift trusted CA bundle injected by the Cluster Network Operator.
 	// +optional
 	TrustedCABundle *ConfigMapKeyReference `json:"trustedCABundle,omitempty"`
 }

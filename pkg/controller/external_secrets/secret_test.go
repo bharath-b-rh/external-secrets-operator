@@ -113,7 +113,7 @@ func TestCreateOrApplySecret(t *testing.T) {
 					return nil
 				})
 			},
-			wantErr: fmt.Sprintf("failed to patch %s/%s secret resource metadata: %s", commontest.TestExternalSecretsNamespace, testValidateSecretResourceName, commontest.ErrTestClient),
+			wantErr: fmt.Sprintf("failed to patch Secret %s/%s metadata: %s", commontest.TestExternalSecretsNamespace, testValidateSecretResourceName, commontest.ErrTestClient),
 		},
 		{
 			// Regression test: when the managed label is removed from the Secret, the object
@@ -151,7 +151,7 @@ func TestCreateOrApplySecret(t *testing.T) {
 					return commontest.ErrTestClient
 				})
 			},
-			wantErr: fmt.Sprintf("failed to patch %s/%s secret resource metadata: %s", commontest.TestExternalSecretsNamespace, testValidateSecretResourceName, commontest.ErrTestClient),
+			wantErr: fmt.Sprintf("failed to patch Secret %s/%s metadata: %s", commontest.TestExternalSecretsNamespace, testValidateSecretResourceName, commontest.ErrTestClient),
 		},
 		{
 			name: "reconciliation of secret which already exists in expected state",
@@ -195,7 +195,7 @@ func TestCreateOrApplySecret(t *testing.T) {
 					return nil
 				})
 			},
-			wantErr: fmt.Sprintf("failed to create %s/%s secret resource: %s", commontest.TestExternalSecretsNamespace, testValidateSecretResourceName, commontest.ErrTestClient),
+			wantErr: fmt.Sprintf("failed to create Secret %s/%s: %s", commontest.TestExternalSecretsNamespace, testValidateSecretResourceName, commontest.ErrTestClient),
 		},
 		{
 			name: "successful secret creation",

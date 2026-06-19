@@ -48,6 +48,7 @@ import (
 
 	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
 	externalsecrets "github.com/openshift/external-secrets-operator/pkg/controller/external_secrets"
+	"github.com/openshift/external-secrets-operator/pkg/controller/common"
 	"github.com/openshift/external-secrets-operator/test/utils"
 )
 
@@ -63,12 +64,12 @@ const (
 
 const (
 	// test resource names
-	operatorNamespace              = "external-secrets-operator"
-	operandNamespace               = "external-secrets"
-	operatorPodPrefix              = "external-secrets-operator-controller-manager-"
-	operandCoreControllerPodPrefix = "external-secrets-"
-	operandCertControllerPodPrefix = "external-secrets-cert-controller-"
-	operandWebhookPodPrefix        = "external-secrets-webhook-"
+	operatorNamespace              = common.ExternalSecretsOperatorCommonName
+	operandNamespace               = externalsecrets.OperandDefaultNamespace
+	operatorPodPrefix              = common.ExternalSecretsOperatorCommonName + "-controller-manager-"
+	operandCoreControllerPodPrefix = externalsecrets.OperandCoreControllerPodPrefix
+	operandCertControllerPodPrefix = externalsecrets.OperandCertControllerPodPrefix
+	operandWebhookPodPrefix        = externalsecrets.OperandWebhookPodPrefix
 	testNamespacePrefix            = "external-secrets-e2e-test-"
 )
 
@@ -136,28 +137,16 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			operatorPodPrefix,
 		})).To(Succeed())
 
-		esc := &operatorv1alpha1.ExternalSecretsConfig{}
-		if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esc); err != nil {
-			if k8serrors.IsNotFound(err) {
-				By("Creating the externalsecrets.openshift.operator.io/cluster CR")
-				loader.CreateFromFile(testassets.ReadFile, externalSecretsFile, "")
-			} else {
-				Expect(err).NotTo(HaveOccurred(), "failed to get cluster ExternalSecretsConfig")
-			}
-		}
-
-		By("Waiting for ExternalSecretsConfig to be Ready (with Degraded=False)")
-		Expect(utils.WaitForExternalSecretsConfigReady(ctx, dynamicClient, "cluster", 2*time.Minute)).To(Succeed(),
+		By("Ensuring ExternalSecretsConfig cluster CR exists and is Ready")
+		Expect(ensureExternalSecretsConfigReady(ctx)).To(Succeed(),
 			"ExternalSecretsConfig should have Ready=True and Degraded=False conditions")
 	})
 
 	BeforeEach(func() {
 		By("Verifying external-secrets operand pods are ready")
-		Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, operandNamespace, []string{
-			operandCoreControllerPodPrefix,
-			operandCertControllerPodPrefix,
-			operandWebhookPodPrefix,
-		})).To(Succeed())
+		esc := &operatorv1alpha1.ExternalSecretsConfig{}
+		Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc)).To(Succeed())
+		Expect(utils.VerifyOperandPodsReady(ctx, clientset, operandNamespace, esc)).To(Succeed())
 	})
 
 	AfterEach(func() {
@@ -374,14 +363,14 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 	Context("Environment Variables", func() {
 		// Map component names to deployment names and target container names
 		componentToDeployment := map[string]string{
-			"ExternalSecretsCoreController": "external-secrets",
-			"Webhook":                       "external-secrets-webhook",
-			"CertController":                "external-secrets-cert-controller",
+			"ExternalSecretsCoreController": externalsecrets.OperandCoreControllerDeployment,
+			"Webhook":                       externalsecrets.OperandWebhookDeployment,
+			"CertController":                externalsecrets.OperandCertControllerDeployment,
 		}
 		componentToContainer := map[string]string{
-			"ExternalSecretsCoreController": "external-secrets",
-			"Webhook":                       "webhook",
-			"CertController":                "cert-controller",
+			"ExternalSecretsCoreController": externalsecrets.OperandCoreControllerContainer,
+			"Webhook":                       externalsecrets.OperandWebhookContainer,
+			"CertController":                externalsecrets.OperandCertControllerContainer,
 		}
 
 		// Define test env vars
@@ -410,30 +399,28 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 		}
 
 		It("should set custom environment variables for all component deployments", func() {
+			esc := &operatorv1alpha1.ExternalSecretsConfig{}
+			Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc)).To(Succeed())
+			applicableEnvConfigs := componentConfigsForESC(esc, envConfigs)
+
 			By("Updating ExternalSecretsConfig with custom env vars")
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				existingCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, existingCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, existingCR); err != nil {
 					return err
 				}
 
 				updatedCR := existingCR.DeepCopy()
-				updatedCR.Spec.ControllerConfig = operatorv1alpha1.ControllerConfig{
-					ComponentConfigs: envConfigs,
-				}
+				updatedCR.Spec.ControllerConfig.ComponentConfigs = applicableEnvConfigs
 
 				return runtimeClient.Update(ctx, updatedCR)
 			})
 			Expect(err).NotTo(HaveOccurred(), "should update ExternalSecretsConfig with custom env vars")
 
 			By("Waiting for pods to be ready after config update")
-			Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, operandNamespace, []string{
-				operandCoreControllerPodPrefix,
-				operandCertControllerPodPrefix,
-				operandWebhookPodPrefix,
-			})).To(Succeed())
+			Expect(utils.VerifyOperandPodsReady(ctx, clientset, operandNamespace, esc)).To(Succeed())
 
-			for _, config := range envConfigs {
+			for _, config := range applicableEnvConfigs {
 				By(fmt.Sprintf("Verifying custom environment variables in %s deployment", config.ComponentName))
 
 				deploymentName := componentToDeployment[string(config.ComponentName)]
@@ -461,30 +448,28 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 		})
 
 		It("should remove custom environment variables when config is cleared", func() {
+			esc := &operatorv1alpha1.ExternalSecretsConfig{}
+			Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc)).To(Succeed())
+			applicableEnvConfigs := componentConfigsForESC(esc, envConfigs)
+
 			By("Removing custom env vars from ExternalSecretsConfig")
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				existingCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, existingCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, existingCR); err != nil {
 					return err
 				}
 
 				updatedCR := existingCR.DeepCopy()
-				updatedCR.Spec.ControllerConfig = operatorv1alpha1.ControllerConfig{
-					ComponentConfigs: nil,
-				}
+				updatedCR.Spec.ControllerConfig.ComponentConfigs = nil
 
 				return runtimeClient.Update(ctx, updatedCR)
 			})
 			Expect(err).NotTo(HaveOccurred(), "should update ExternalSecretsConfig to remove custom env vars")
 
 			By("Waiting for pods to be ready after config update")
-			Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, operandNamespace, []string{
-				operandCoreControllerPodPrefix,
-				operandCertControllerPodPrefix,
-				operandWebhookPodPrefix,
-			})).To(Succeed())
+			Expect(utils.VerifyOperandPodsReady(ctx, clientset, operandNamespace, esc)).To(Succeed())
 
-			for _, config := range envConfigs {
+			for _, config := range applicableEnvConfigs {
 				By(fmt.Sprintf("Verifying custom environment variables removed from %s deployment", config.ComponentName))
 
 				deploymentName := componentToDeployment[string(config.ComponentName)]
@@ -514,10 +499,13 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 
 	Context("Deployment Revision History Limit", func() {
 		It("should use default revisionHistoryLimit when not configured", func() {
+			esc := &operatorv1alpha1.ExternalSecretsConfig{}
+			Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc)).To(Succeed())
+
 			By("Verifying default revisionHistoryLimit (10) for ExternalSecretsCoreController deployment")
 			Eventually(func(g Gomega) {
 				deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, externalsecrets.OperandCoreControllerDeployment, metav1.GetOptions{})
-				g.Expect(err).NotTo(HaveOccurred(), "should get external-secrets deployment")
+				g.Expect(err).NotTo(HaveOccurred(), "should get %s deployment", externalsecrets.OperandCoreControllerDeployment)
 				g.Expect(deployment.Spec.RevisionHistoryLimit).NotTo(BeNil(), "revisionHistoryLimit should be set")
 				g.Expect(*deployment.Spec.RevisionHistoryLimit).To(Equal(int32(10)), "revisionHistoryLimit should default to 10 when not configured")
 				hasArg, found := deploymentContainerHasArg(deployment, externalsecrets.OperandCoreControllerContainer, externalsecrets.UnsafeAllowGenericTargetsArg)
@@ -527,19 +515,21 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 
 			By("Verifying default revisionHistoryLimit (10) for Webhook deployment")
 			Eventually(func(g Gomega) {
-				deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, "external-secrets-webhook", metav1.GetOptions{})
-				g.Expect(err).NotTo(HaveOccurred(), "should get external-secrets-webhook deployment")
+				deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, externalsecrets.OperandWebhookDeployment, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred(), "should get %s deployment", externalsecrets.OperandWebhookDeployment)
 				g.Expect(deployment.Spec.RevisionHistoryLimit).NotTo(BeNil(), "revisionHistoryLimit should be set")
 				g.Expect(*deployment.Spec.RevisionHistoryLimit).To(Equal(int32(10)), "revisionHistoryLimit should default to 10 when not configured")
 			}, time.Minute, 5*time.Second).Should(Succeed())
 
-			By("Verifying default revisionHistoryLimit (10) for CertController deployment")
-			Eventually(func(g Gomega) {
-				deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, "external-secrets-cert-controller", metav1.GetOptions{})
-				g.Expect(err).NotTo(HaveOccurred(), "should get external-secrets-cert-controller deployment")
-				g.Expect(deployment.Spec.RevisionHistoryLimit).NotTo(BeNil(), "revisionHistoryLimit should be set")
-				g.Expect(*deployment.Spec.RevisionHistoryLimit).To(Equal(int32(10)), "revisionHistoryLimit should default to 10 when not configured")
-			}, time.Minute, 5*time.Second).Should(Succeed())
+			if utils.IsCertControllerExpected(esc) {
+				By("Verifying default revisionHistoryLimit (10) for CertController deployment")
+				Eventually(func(g Gomega) {
+					deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, externalsecrets.OperandCertControllerDeployment, metav1.GetOptions{})
+					g.Expect(err).NotTo(HaveOccurred(), "should get %s deployment", externalsecrets.OperandCertControllerDeployment)
+					g.Expect(deployment.Spec.RevisionHistoryLimit).NotTo(BeNil(), "revisionHistoryLimit should be set")
+					g.Expect(*deployment.Spec.RevisionHistoryLimit).To(Equal(int32(10)), "revisionHistoryLimit should default to 10 when not configured")
+				}, time.Minute, 5*time.Second).Should(Succeed())
+			}
 		})
 
 		It("should set custom revisionHistoryLimit for all component deployments", func() {
@@ -557,36 +547,37 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 				loader.CreateFromFile(testassets.ReadFile, externalSecretsFile, "")
 			}()
 
+			esc := &operatorv1alpha1.ExternalSecretsConfig{}
+			Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc)).To(Succeed())
+
 			By("Waiting for pods to be ready after config update")
-			Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, operandNamespace, []string{
-				operandCoreControllerPodPrefix,
-				operandCertControllerPodPrefix,
-				operandWebhookPodPrefix,
-			})).To(Succeed())
+			Expect(utils.VerifyOperandPodsReady(ctx, clientset, operandNamespace, esc)).To(Succeed())
 
 			By("Verifying custom revisionHistoryLimit (3) for ExternalSecretsCoreController deployment")
 			Eventually(func(g Gomega) {
-				deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, "external-secrets", metav1.GetOptions{})
-				g.Expect(err).NotTo(HaveOccurred(), "should get external-secrets deployment")
+				deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, externalsecrets.OperandCoreControllerDeployment, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred(), "should get %s deployment", externalsecrets.OperandCoreControllerDeployment)
 				g.Expect(deployment.Spec.RevisionHistoryLimit).NotTo(BeNil(), "revisionHistoryLimit should be set")
 				g.Expect(*deployment.Spec.RevisionHistoryLimit).To(Equal(controllerLimit), "revisionHistoryLimit should be %d for controller", controllerLimit)
 			}, time.Minute, 5*time.Second).Should(Succeed())
 
 			By("Verifying custom revisionHistoryLimit (5) for Webhook deployment")
 			Eventually(func(g Gomega) {
-				deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, "external-secrets-webhook", metav1.GetOptions{})
-				g.Expect(err).NotTo(HaveOccurred(), "should get external-secrets-webhook deployment")
+				deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, externalsecrets.OperandWebhookDeployment, metav1.GetOptions{})
+				g.Expect(err).NotTo(HaveOccurred(), "should get %s deployment", externalsecrets.OperandWebhookDeployment)
 				g.Expect(deployment.Spec.RevisionHistoryLimit).NotTo(BeNil(), "revisionHistoryLimit should be set")
 				g.Expect(*deployment.Spec.RevisionHistoryLimit).To(Equal(webhookLimit), "revisionHistoryLimit should be %d for webhook", webhookLimit)
 			}, time.Minute, 5*time.Second).Should(Succeed())
 
-			By("Verifying custom revisionHistoryLimit (2) for CertController deployment")
-			Eventually(func(g Gomega) {
-				deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, "external-secrets-cert-controller", metav1.GetOptions{})
-				g.Expect(err).NotTo(HaveOccurred(), "should get external-secrets-cert-controller deployment")
-				g.Expect(deployment.Spec.RevisionHistoryLimit).NotTo(BeNil(), "revisionHistoryLimit should be set")
-				g.Expect(*deployment.Spec.RevisionHistoryLimit).To(Equal(certControllerLimit), "revisionHistoryLimit should be %d for cert-controller", certControllerLimit)
-			}, time.Minute, 5*time.Second).Should(Succeed())
+			if utils.IsCertControllerExpected(esc) {
+				By("Verifying custom revisionHistoryLimit (2) for CertController deployment")
+				Eventually(func(g Gomega) {
+					deployment, err := clientset.AppsV1().Deployments(operandNamespace).Get(ctx, externalsecrets.OperandCertControllerDeployment, metav1.GetOptions{})
+					g.Expect(err).NotTo(HaveOccurred(), "should get %s deployment", externalsecrets.OperandCertControllerDeployment)
+					g.Expect(deployment.Spec.RevisionHistoryLimit).NotTo(BeNil(), "revisionHistoryLimit should be set")
+					g.Expect(*deployment.Spec.RevisionHistoryLimit).To(Equal(certControllerLimit), "revisionHistoryLimit should be %d for cert-controller", certControllerLimit)
+				}, time.Minute, 5*time.Second).Should(Succeed())
+			}
 		})
 	})
 
@@ -743,14 +734,14 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 
 			// Capture original annotations so we can restore them and avoid test pollution
 			existingCR := &operatorv1alpha1.ExternalSecretsConfig{}
-			Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, existingCR)).To(Succeed(), "should get ExternalSecretsConfig to capture initial state")
+			Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, existingCR)).To(Succeed(), "should get ExternalSecretsConfig to capture initial state")
 			originalAnnotations := maps.Clone(existingCR.Spec.ControllerConfig.Annotations)
 
 			defer func() {
 				By("Restoring original annotations on ExternalSecretsConfig CR")
 				err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 					currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-					if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+					if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 						return err
 					}
 					currentCR.Spec.ControllerConfig.Annotations = originalAnnotations
@@ -762,7 +753,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			By("Updating ExternalSecretsConfig with custom annotations")
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				existingCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, existingCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, existingCR); err != nil {
 					return err
 				}
 
@@ -779,11 +770,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			Expect(err).NotTo(HaveOccurred(), "should update ExternalSecretsConfig with annotations")
 
 			By("Waiting for external-secrets operand pods to be ready")
-			Expect(utils.VerifyPodsReadyByPrefix(ctx, clientset, operandNamespace, []string{
-				operandCoreControllerPodPrefix,
-				operandCertControllerPodPrefix,
-				operandWebhookPodPrefix,
-			})).To(Succeed())
+			Expect(utils.VerifyOperandPodsReady(ctx, clientset, operandNamespace, existingCR)).To(Succeed())
 
 			// Verify annotations are applied to each resource type
 			for _, resourceType := range getResourceTypesToVerify() {
@@ -818,7 +805,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			By("Removing test annotations from ExternalSecretsConfig CR")
 			err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 					return err
 				}
 				for key := range testAnnotations {
@@ -862,7 +849,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 		It("should not allow updating annotations with reserved domain prefix", func() {
 			By("Getting the existing ExternalSecretsConfig CR")
 			existingCR := &operatorv1alpha1.ExternalSecretsConfig{}
-			err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, existingCR)
+			err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, existingCR)
 			Expect(err).NotTo(HaveOccurred(), "should get ExternalSecretsConfig CR")
 
 			By("Attempting to update with a reserved domain annotation")
@@ -942,7 +929,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 				By("Verifying the cleanup annotation is present on the CR")
 				Eventually(func(g Gomega) {
 					esc := &operatorv1alpha1.ExternalSecretsConfig{}
-					g.Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esc)).To(Succeed())
+					g.Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc)).To(Succeed())
 
 					annotations := esc.GetAnnotations()
 					g.Expect(annotations).To(HaveKeyWithValue(
@@ -967,7 +954,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 		It("should prepend eso-user- prefix to custom network policies from CR spec", func() {
 			By("Verifying the ExternalSecretsConfig has custom network policies configured")
 			esc := &operatorv1alpha1.ExternalSecretsConfig{}
-			Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, esc)).To(Succeed())
+			Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc)).To(Succeed())
 
 			if len(esc.Spec.ControllerConfig.NetworkPolicies) == 0 {
 				Skip("No custom network policies configured in ExternalSecretsConfig")
@@ -1002,7 +989,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			port8443 := intstr.FromInt32(8443)
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 					return err
 				}
 
@@ -1044,15 +1031,23 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 	// OpenShift egress proxy is already configured via proxy.config.openshift.io/cluster object
 	Context("Proxy Egress Network Policy", Label("Platform:Generic"), Label("Proxy:HTTP"), func() {
 		var clusterProxyPorts []int32
+		var originalProxy *operatorv1alpha1.ProxyConfig
 
 		BeforeAll(func() {
+			By("Capturing original proxy configuration from ExternalSecretsConfig")
+			esc := &operatorv1alpha1.ExternalSecretsConfig{}
+			Expect(runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, esc)).To(Succeed())
+			if esc.Spec.ApplicationConfig.Proxy != nil {
+				originalProxy = esc.Spec.ApplicationConfig.Proxy.DeepCopy()
+			}
+
 			By("Checking cluster-wide proxy configuration exists")
 			proxyGVR := schema.GroupVersionResource{
 				Group:    "config.openshift.io",
 				Version:  "v1",
 				Resource: "proxies",
 			}
-			proxyCR, err := dynamicClient.Resource(proxyGVR).Get(ctx, "cluster", metav1.GetOptions{})
+			proxyCR, err := dynamicClient.Resource(proxyGVR).Get(ctx, common.ExternalSecretsConfigObjectName, metav1.GetOptions{})
 			Expect(err).NotTo(HaveOccurred(), "should be able to read proxies.config.openshift.io/cluster CR")
 
 			proxyStatus, _, _ := unstructured.NestedMap(proxyCR.Object, "status")
@@ -1067,16 +1062,16 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 		})
 
 		AfterEach(func() {
-			By("Clearing proxy configuration from CR")
+			By("Restoring original proxy configuration on ExternalSecretsConfig")
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 					return err
 				}
-				currentCR.Spec.ApplicationConfig.Proxy = nil
+				currentCR.Spec.ApplicationConfig.Proxy = originalProxy
 				return runtimeClient.Update(ctx, currentCR)
 			})
-			Expect(err).NotTo(HaveOccurred(), "should clear proxy config")
+			Expect(err).NotTo(HaveOccurred(), "should restore original proxy config")
 		})
 
 		// Cluster-wide proxy configuration consumed via OLM env vars.
@@ -1084,7 +1079,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			By("Setting proxy configuration with Managed network policy provisioning")
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 					return err
 				}
 				currentCR.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
@@ -1114,7 +1109,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			By("Setting proxy configuration with Managed provisioning first")
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 					return err
 				}
 				currentCR.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
@@ -1133,7 +1128,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			By("Switching to Unmanaged provisioning")
 			err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 					return err
 				}
 				currentCR.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
@@ -1146,7 +1141,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			By("Waiting for proxy egress policy to be removed")
 			Eventually(func(g Gomega) {
 				_, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npProxyEgressPolicyName, metav1.GetOptions{})
-				g.Expect(err).To(HaveOccurred(), "proxy egress policy should be removed after switching to Unmanaged")
+				g.Expect(k8serrors.IsNotFound(err)).To(BeTrue(), "proxy egress policy should be removed after switching to Unmanaged")
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
@@ -1155,7 +1150,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			By("Setting proxy configuration with Unmanaged network policy provisioning")
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 					return err
 				}
 				currentCR.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
@@ -1167,9 +1162,9 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			Expect(err).NotTo(HaveOccurred(), "should set proxy config with Unmanaged provisioning")
 
 			By("Verifying proxy egress policy is not created")
-			Eventually(func(g Gomega) {
+			Consistently(func(g Gomega) {
 				_, err := clientset.NetworkingV1().NetworkPolicies(operandNamespace).Get(ctx, npProxyEgressPolicyName, metav1.GetOptions{})
-				g.Expect(err).To(HaveOccurred(), "proxy egress policy should not exist when provisioning is Unmanaged")
+				g.Expect(k8serrors.IsNotFound(err)).To(BeTrue(), "proxy egress policy should not exist when provisioning is Unmanaged")
 			}, 30*time.Second, 5*time.Second).Should(Succeed())
 		})
 
@@ -1178,7 +1173,7 @@ var _ = Describe("External Secrets Operator End-to-End test scenarios", Ordered,
 			By("Setting proxy configuration with Managed network policy provisioning")
 			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				currentCR := &operatorv1alpha1.ExternalSecretsConfig{}
-				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: "cluster"}, currentCR); err != nil {
+				if err := runtimeClient.Get(ctx, client.ObjectKey{Name: common.ExternalSecretsConfigObjectName}, currentCR); err != nil {
 					return err
 				}
 				currentCR.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{

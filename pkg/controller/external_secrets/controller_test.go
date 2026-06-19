@@ -9,15 +9,89 @@ import (
 	"time"
 
 	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
-	"github.com/openshift/external-secrets-operator/pkg/controller/client/fakes"
 	"github.com/openshift/external-secrets-operator/pkg/controller/common"
-	"github.com/openshift/external-secrets-operator/pkg/controller/commontest"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/openshift/external-secrets-operator/pkg/controller/client/fakes"
+	"github.com/openshift/external-secrets-operator/pkg/controller/commontest"
 )
+
+func TestHasManagedOrWatchLabel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		labels map[string]string
+		want   bool
+	}{
+		{
+			name:   "managed label",
+			labels: map[string]string{ManagedResourceLabelKey: ManagedResourceLabelValue},
+			want:   true,
+		},
+		{
+			name:   "watch label",
+			labels: map[string]string{WatchedResourceLabelKey: WatchedResourceLabelValue},
+			want:   true,
+		},
+		{
+			name: "both labels",
+			labels: map[string]string{
+				ManagedResourceLabelKey: ManagedResourceLabelValue,
+				WatchedResourceLabelKey: WatchedResourceLabelValue},
+			want: true,
+		},
+		{
+			name:   "unrelated labels",
+			labels: map[string]string{"foo": "bar"},
+			want:   false,
+		},
+		{
+			name:   "wrong watch value",
+			labels: map[string]string{WatchedResourceLabelKey: "false"},
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := hasManagedOrWatchLabel(tt.labels); got != tt.want {
+				t.Fatalf("hasManagedOrWatchLabel() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildCacheObjectList_ConfigMapNamespaceScope(t *testing.T) {
+	t.Parallel()
+
+	objectList := buildCacheObjectList(false)
+	var byObject cache.ByObject
+	var found bool
+	for obj, cfg := range objectList {
+		if _, ok := obj.(*corev1.ConfigMap); ok {
+			byObject = cfg
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("ConfigMap not in cache object list")
+	}
+	if _, ok := byObject.Namespaces[OperandDefaultNamespace]; !ok {
+		t.Fatalf("expected ConfigMap cache scoped to %q, got namespaces %v", OperandDefaultNamespace, byObject.Namespaces)
+	}
+	if byObject.Label != nil {
+		t.Fatalf("expected no label selector on namespace-scoped ConfigMap cache, got %v", byObject.Label)
+	}
+}
 
 func TestDeploymentFailureConditions(t *testing.T) {
 	t.Parallel()
@@ -80,12 +154,7 @@ func TestDeploymentFailureConditions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			degraded, ready := deploymentFailureConditions(
-				observedGeneration,
-				tt.reconcileErr,
-				common.IsIrrecoverableError(tt.reconcileErr),
-				common.IsUserConfigurationError(tt.reconcileErr),
-			)
+			degraded, ready := deploymentFailureConditions(observedGeneration, tt.reconcileErr)
 
 			if degraded.ObservedGeneration != observedGeneration {
 				t.Fatalf("degraded ObservedGeneration = %d, want %d", degraded.ObservedGeneration, observedGeneration)
@@ -195,15 +264,6 @@ func TestReconcileDeploymentFailureResult(t *testing.T) {
 	statusUpdateErr := errors.New("status update failed")
 	retryErr := common.NewRetryRequiredError(errors.New("timeout"), "temporary failure")
 	proxyErr := common.NewUserConfigurationError(errors.New("invalid proxy URL configured"), "proxy configuration validation failed")
-	issuerNotFoundErr := common.NewUserConfigurationError(
-		apierrors.NewNotFound(schema.GroupResource{Group: "cert-manager.io", Resource: "issuers"}, testIssuerName),
-		"issuer %q of kind %q not found in %s",
-		testIssuerName, issuerKind, commontest.TestExternalSecretsNamespace,
-	)
-	bitwardenConfigErr := common.NewUserConfigurationError(
-		fmt.Errorf("invalid bitwardenSecretManagerProvider config"),
-		"either secretRef or certManagerConfig must be configured when bitwardenSecretManagerProvider is enabled",
-	)
 
 	tests := []struct {
 		name            string
@@ -230,15 +290,6 @@ func TestReconcileDeploymentFailureResult(t *testing.T) {
 		{
 			name:         "proxy configuration error waits for CR update",
 			reconcileErr: proxyErr,
-		},
-		{
-			name:         "issuer NotFound requeues",
-			reconcileErr: issuerNotFoundErr,
-			wantRequeue:  common.DefaultRequeueTime,
-		},
-		{
-			name:         "bitwarden incomplete config waits for CR update",
-			reconcileErr: bitwardenConfigErr,
 		},
 		{
 			name:         "retry required error requeues",

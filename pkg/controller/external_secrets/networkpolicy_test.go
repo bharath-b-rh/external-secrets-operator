@@ -15,7 +15,6 @@ import (
 
 	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
 	"github.com/openshift/external-secrets-operator/pkg/controller/client/fakes"
-	"github.com/openshift/external-secrets-operator/pkg/controller/common"
 	"github.com/openshift/external-secrets-operator/pkg/controller/commontest"
 )
 
@@ -295,7 +294,7 @@ func TestCreateOrApplyCustomNetworkPolicies(t *testing.T) {
 								Ports: []networkingv1.NetworkPolicyPort{
 									{
 										Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
-										Port:     &[]intstr.IntOrString{intstr.FromInt(443)}[0],
+										Port:     &[]intstr.IntOrString{intstr.FromInt32(443)}[0],
 									},
 								},
 							},
@@ -354,7 +353,7 @@ func TestCreateOrApplyCustomNetworkPolicies(t *testing.T) {
 						np := &networkingv1.NetworkPolicy{
 							ObjectMeta: metav1.ObjectMeta{
 								Name:      userNetworkPolicyPrefix + "test-update-policy",
-								Namespace: externalsecretsDefaultNamespace,
+								Namespace: OperandDefaultNamespace,
 							},
 						}
 						np.DeepCopyInto(o)
@@ -375,7 +374,7 @@ func TestCreateOrApplyCustomNetworkPolicies(t *testing.T) {
 								Ports: []networkingv1.NetworkPolicyPort{
 									{
 										Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
-										Port:     &[]intstr.IntOrString{intstr.FromInt(443)}[0],
+										Port:     &[]intstr.IntOrString{intstr.FromInt32(443)}[0],
 									},
 								},
 							},
@@ -487,7 +486,7 @@ func TestBuildNetworkPolicyFromConfig(t *testing.T) {
 						Ports: []networkingv1.NetworkPolicyPort{
 							{
 								Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
-								Port:     &[]intstr.IntOrString{intstr.FromInt(443)}[0],
+								Port:     &[]intstr.IntOrString{intstr.FromInt32(443)}[0],
 							},
 						},
 					},
@@ -554,7 +553,6 @@ func TestExtractProxyPorts(t *testing.T) {
 		name        string
 		proxyConfig *operatorv1alpha1.ProxyConfig
 		wantPorts   []int
-		wantErr     bool
 	}{
 		{
 			name: "https proxy with explicit port",
@@ -619,17 +617,7 @@ func TestExtractProxyPorts(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ports, err := extractProxyPorts(tt.proxyConfig)
-			if tt.wantErr {
-				if err == nil {
-					t.Errorf("Expected error but got none")
-				}
-				return
-			}
-			if err != nil {
-				t.Errorf("Unexpected error: %v", err)
-				return
-			}
+			ports := extractProxyPorts(tt.proxyConfig)
 			if len(ports) != len(tt.wantPorts) {
 				t.Errorf("Expected %d ports, got %d: %v", len(tt.wantPorts), len(ports), ports)
 				return
@@ -648,7 +636,7 @@ func TestBuildProxyEgressNetworkPolicy(t *testing.T) {
 		name        string
 		proxyConfig *operatorv1alpha1.ProxyConfig
 		wantPorts   []int32
-		wantErr     bool
+		wantNil     bool
 	}{
 		{
 			name: "builds policy with explicit port from http proxy",
@@ -673,11 +661,11 @@ func TestBuildProxyEgressNetworkPolicy(t *testing.T) {
 			wantPorts: []int32{8443, 3128},
 		},
 		{
-			name: "returns error for invalid proxy URL",
+			name: "returns nil when no proxy URLs configured",
 			proxyConfig: &operatorv1alpha1.ProxyConfig{
-				HTTPSProxy: "://invalid",
+				NoProxy: "localhost",
 			},
-			wantErr: true,
+			wantNil: true,
 		},
 	}
 
@@ -686,15 +674,15 @@ func TestBuildProxyEgressNetworkPolicy(t *testing.T) {
 			esc := commontest.TestExternalSecretsConfig()
 			metadata := testResourceMetadata(esc)
 
-			np, err := buildProxyEgressNetworkPolicy(tt.proxyConfig, "test-namespace", metadata)
-			if tt.wantErr {
-				if err == nil {
-					t.Error("Expected error but got none")
+			np := buildProxyEgressNetworkPolicy(tt.proxyConfig, "test-namespace", metadata)
+			if tt.wantNil {
+				if np != nil {
+					t.Errorf("Expected nil policy, got %+v", np)
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("Unexpected error: %v", err)
+			if np == nil {
+				t.Fatal("Expected policy but got nil")
 			}
 
 			if np.Name != proxyEgressPolicyName {
@@ -742,12 +730,30 @@ func TestBuildProxyEgressNetworkPolicy(t *testing.T) {
 func TestReconcileProxyEgressPolicy(t *testing.T) {
 	tests := []struct {
 		name                        string
+		olmEnv                      map[string]string
 		preReq                      func(*Reconciler, *fakes.FakeCtrlClient)
 		updateExternalSecretsConfig func(*operatorv1alpha1.ExternalSecretsConfig)
 		wantErr                     string
 		wantCreated                 bool
 		wantDeleted                 bool
 	}{
+		{
+			name: "proxy egress policy created when Managed and OLM provides proxy URLs",
+			olmEnv: map[string]string{
+				httpProxyEnvVar: "http://proxy.example.com:3128",
+			},
+			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient) {
+				m.ExistsCalls(func(ctx context.Context, ns types.NamespacedName, obj client.Object) (bool, error) {
+					return false, nil
+				})
+			},
+			updateExternalSecretsConfig: func(esc *operatorv1alpha1.ExternalSecretsConfig) {
+				esc.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
+					NetworkPolicyProvisioning: operatorv1alpha1.ManagementStateManaged,
+				}
+			},
+			wantCreated: true,
+		},
 		{
 			name: "proxy egress policy created when proxy configured and managed",
 			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient) {
@@ -810,7 +816,7 @@ func TestReconcileProxyEgressPolicy(t *testing.T) {
 						existing := &networkingv1.NetworkPolicy{
 							ObjectMeta: metav1.ObjectMeta{
 								Name:      proxyEgressPolicyName,
-								Namespace: externalsecretsDefaultNamespace,
+								Namespace: OperandDefaultNamespace,
 							},
 						}
 						existing.DeepCopyInto(o)
@@ -834,7 +840,7 @@ func TestReconcileProxyEgressPolicy(t *testing.T) {
 						existing := &networkingv1.NetworkPolicy{
 							ObjectMeta: metav1.ObjectMeta{
 								Name:      proxyEgressPolicyName,
-								Namespace: externalsecretsDefaultNamespace,
+								Namespace: OperandDefaultNamespace,
 							},
 						}
 						existing.DeepCopyInto(o)
@@ -845,6 +851,29 @@ func TestReconcileProxyEgressPolicy(t *testing.T) {
 			updateExternalSecretsConfig: func(esc *operatorv1alpha1.ExternalSecretsConfig) {
 				esc.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
 					HTTPProxy:                 "http://proxy.example.com:3128",
+					NetworkPolicyProvisioning: operatorv1alpha1.ManagementStateUnmanaged,
+				}
+			},
+			wantDeleted: true,
+		},
+		{
+			name: "proxy egress policy deleted when only networkPolicyProvisioning Unmanaged with empty URLs",
+			preReq: func(r *Reconciler, m *fakes.FakeCtrlClient) {
+				m.ExistsCalls(func(ctx context.Context, ns types.NamespacedName, obj client.Object) (bool, error) {
+					if o, ok := obj.(*networkingv1.NetworkPolicy); ok {
+						existing := &networkingv1.NetworkPolicy{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:      proxyEgressPolicyName,
+								Namespace: OperandDefaultNamespace,
+							},
+						}
+						existing.DeepCopyInto(o)
+					}
+					return true, nil
+				})
+			},
+			updateExternalSecretsConfig: func(esc *operatorv1alpha1.ExternalSecretsConfig) {
+				esc.Spec.ApplicationConfig.Proxy = &operatorv1alpha1.ProxyConfig{
 					NetworkPolicyProvisioning: operatorv1alpha1.ManagementStateUnmanaged,
 				}
 			},
@@ -869,6 +898,16 @@ func TestReconcileProxyEgressPolicy(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			for _, key := range []string{
+				httpProxyEnvVar, httpsProxyEnvVar, noProxyEnvVar,
+				httpProxyEnvVarLowercase, httpsProxyEnvVarLowercase, noProxyEnvVarLowercase,
+			} {
+				t.Setenv(key, "")
+			}
+			for key, value := range tt.olmEnv {
+				t.Setenv(key, value)
+			}
+
 			r := testReconciler(t)
 			mock := &fakes.FakeCtrlClient{}
 			r.CtrlClient = mock
@@ -879,6 +918,10 @@ func TestReconcileProxyEgressPolicy(t *testing.T) {
 			esc := commontest.TestExternalSecretsConfig()
 			if tt.updateExternalSecretsConfig != nil {
 				tt.updateExternalSecretsConfig(esc)
+			}
+
+			if err := r.validateExternalSecretsConfig(esc); err != nil {
+				t.Fatalf("validateExternalSecretsConfig() error = %v", err)
 			}
 
 			err := r.reconcileProxyEgressPolicy(esc, testResourceMetadata(esc), false)
@@ -1005,10 +1048,10 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
 						npList.Items = []networkingv1.NetworkPolicy{
-							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
-							{ObjectMeta: metav1.ObjectMeta{Name: "deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
-							{ObjectMeta: metav1.ObjectMeta{Name: "allow-to-dns", Namespace: externalsecretsDefaultNamespace}},
-							{ObjectMeta: metav1.ObjectMeta{Name: "user-proxy-egress", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-deny-all-traffic", Namespace: OperandDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "deny-all-traffic", Namespace: OperandDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "allow-to-dns", Namespace: OperandDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "user-proxy-egress", Namespace: OperandDefaultNamespace}},
 						}
 					}
 					return nil
@@ -1023,8 +1066,8 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
 						npList.Items = []networkingv1.NetworkPolicy{
-							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
-							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-allow-to-dns", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-deny-all-traffic", Namespace: OperandDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-allow-to-dns", Namespace: OperandDefaultNamespace}},
 						}
 					}
 					return nil
@@ -1048,8 +1091,8 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
 						npList.Items = []networkingv1.NetworkPolicy{
-							{ObjectMeta: metav1.ObjectMeta{Name: "allow-custom-egress", Namespace: externalsecretsDefaultNamespace}},
-							{ObjectMeta: metav1.ObjectMeta{Name: "eso-user-allow-custom-egress", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "allow-custom-egress", Namespace: OperandDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "eso-user-allow-custom-egress", Namespace: OperandDefaultNamespace}},
 						}
 					}
 					return nil
@@ -1073,7 +1116,7 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
 						npList.Items = []networkingv1.NetworkPolicy{
-							{ObjectMeta: metav1.ObjectMeta{Name: "deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "deny-all-traffic", Namespace: OperandDefaultNamespace}},
 						}
 					}
 					return nil
@@ -1091,7 +1134,7 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
 						npList.Items = []networkingv1.NetworkPolicy{
-							{ObjectMeta: metav1.ObjectMeta{Name: "deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "deny-all-traffic", Namespace: OperandDefaultNamespace}},
 						}
 					}
 					return nil
@@ -1108,8 +1151,8 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 				m.ListCalls(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 					if npList, ok := list.(*networkingv1.NetworkPolicyList); ok {
 						npList.Items = []networkingv1.NetworkPolicy{
-							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-deny-all-traffic", Namespace: externalsecretsDefaultNamespace}},
-							{ObjectMeta: metav1.ObjectMeta{Name: "my-custom-policy", Namespace: externalsecretsDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "eso-sys-deny-all-traffic", Namespace: OperandDefaultNamespace}},
+							{ObjectMeta: metav1.ObjectMeta{Name: "my-custom-policy", Namespace: OperandDefaultNamespace}},
 						}
 					}
 					return nil
@@ -1134,13 +1177,11 @@ func TestCleanupMigratedNetworkPolicies(t *testing.T) {
 				tt.updateExternalSecretsConfig(esc)
 			}
 
-			rm := common.ResourceMetadata{
-				Labels:                controllerDefaultResourceLabels,
-				Annotations:           esc.Spec.ControllerConfig.Annotations,
-				DeletedAnnotationKeys: []string{},
+			if err := r.validateExternalSecretsConfig(esc); err != nil {
+				t.Fatalf("validateExternalSecretsConfig() error = %v", err)
 			}
 
-			err := r.cleanupMigratedNetworkPolicies(esc, rm)
+			err := r.cleanupMigratedNetworkPolicies(esc)
 			if tt.wantErr != "" {
 				if err == nil || err.Error() != tt.wantErr {
 					t.Errorf("Expected error: %v, got: %v", tt.wantErr, err)

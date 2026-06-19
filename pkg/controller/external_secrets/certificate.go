@@ -64,24 +64,25 @@ func (r *Reconciler) createOrApplyCertificate(esc *operatorv1alpha1.ExternalSecr
 		return common.FromClientError(err, "failed to check %s certificate resource already exists", certificateName)
 	}
 
-	if exist && recon {
+	if !exist {
+		return r.createWithFallback(desired, resourceMetadata, certificateName, esc)
+	}
+
+	if recon {
 		r.eventRecorder.Eventf(esc, corev1.EventTypeWarning, "ResourceAlreadyExists", "%s certificate resource already exists, maybe from previous installation", certificateName)
 	}
-	if exist && common.HasObjectChanged(desired, fetched, &resourceMetadata) {
-		r.log.V(1).Info("certificate has been modified, updating to desired state", "name", certificateName)
-		common.RemoveObsoleteAnnotations(desired, resourceMetadata)
-		if err := r.UpdateWithRetry(r.ctx, desired); err != nil {
-			return common.FromClientError(err, "failed to update %s certificate resource", certificateName)
-		}
-		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "certificate resource %s reconciled back to desired state", certificateName)
-	} else {
+
+	if !common.HasObjectChanged(desired, fetched, &resourceMetadata) {
 		r.log.V(4).Info("certificate resource already exists and is in expected state", "name", certificateName)
+		return nil
 	}
-	if !exist {
-		if err := r.createWithFallback(desired, resourceMetadata, certificateName, esc); err != nil {
-			return err
-		}
+
+	r.log.V(1).Info("certificate has been modified, updating to desired state", "name", certificateName)
+	common.RemoveObsoleteAnnotations(desired, resourceMetadata)
+	if err := r.UpdateWithRetry(r.ctx, desired); err != nil {
+		return common.FromClientError(err, "failed to update %s certificate resource", certificateName)
 	}
+	r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "certificate resource %s reconciled back to desired state", certificateName)
 
 	return nil
 }

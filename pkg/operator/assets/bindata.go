@@ -373,8 +373,7 @@ spec:
         - protocol: UDP
           port: 53
   policyTypes:
-      - Egress
-`)
+      - Egress`)
 
 func externalSecretsNetworkpolicy_allowDnsYamlBytes() ([]byte, error) {
 	return _externalSecretsNetworkpolicy_allowDnsYaml, nil

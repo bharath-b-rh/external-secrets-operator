@@ -51,11 +51,11 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 					if !ok {
 						t.Errorf("expected ConfigMap, got %T", obj)
 					}
-					if cm.Name != trustedCABundleConfigMapName {
-						t.Errorf("expected name %s, got %s", trustedCABundleConfigMapName, cm.Name)
+					if cm.Name != ProxyTrustedCABundleConfigMapName {
+						t.Errorf("expected name %s, got %s", ProxyTrustedCABundleConfigMapName, cm.Name)
 					}
-					if cm.Labels[trustedCABundleInjectLabel] != "true" {
-						t.Errorf("expected inject label to be 'true', got %q", cm.Labels[trustedCABundleInjectLabel])
+					if cm.Labels[TrustedCABundleInjectLabel] != "true" {
+						t.Errorf("expected inject label to be 'true', got %q", cm.Labels[TrustedCABundleInjectLabel])
 					}
 					return nil
 				})
@@ -69,7 +69,7 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 				cached.ExistsCalls(func(_ context.Context, _ types.NamespacedName, obj client.Object) (bool, error) {
 					existing := &corev1.ConfigMap{
 						ObjectMeta: metav1.ObjectMeta{
-							Name:      trustedCABundleConfigMapName,
+							Name:      ProxyTrustedCABundleConfigMapName,
 							Namespace: commontest.TestExternalSecretsNamespace,
 							Labels:    getTrustedCABundleLabels(controllerDefaultResourceLabels),
 						},
@@ -87,7 +87,7 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 				cached.ExistsCalls(func(_ context.Context, _ types.NamespacedName, obj client.Object) (bool, error) {
 					existing := &corev1.ConfigMap{
 						ObjectMeta: metav1.ObjectMeta{
-							Name:      trustedCABundleConfigMapName,
+							Name:      ProxyTrustedCABundleConfigMapName,
 							Namespace: commontest.TestExternalSecretsNamespace,
 							Labels:    map[string]string{"app": "something-else"},
 						},
@@ -101,8 +101,8 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 					if !ok {
 						t.Errorf("expected ConfigMap, got %T", obj)
 					}
-					if cm.Labels[trustedCABundleInjectLabel] != "true" {
-						t.Errorf("expected inject label in patch target, got %q", cm.Labels[trustedCABundleInjectLabel])
+					if cm.Labels[TrustedCABundleInjectLabel] != "true" {
+						t.Errorf("expected inject label in patch target, got %q", cm.Labels[TrustedCABundleInjectLabel])
 					}
 					if patch.Type() != types.JSONPatchType {
 						t.Errorf("expected JSONPatch, got %s", patch.Type())
@@ -127,7 +127,7 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 					return false, nil
 				})
 				cached.CreateCalls(func(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
-					return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, trustedCABundleConfigMapName)
+					return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, ProxyTrustedCABundleConfigMapName)
 				})
 				cached.PatchCalls(func(_ context.Context, obj client.Object, patch client.Patch, _ ...client.PatchOption) error {
 					cm, ok := obj.(*corev1.ConfigMap)
@@ -137,8 +137,8 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 					if cm.Labels["app"] != "external-secrets" {
 						t.Errorf("expected app=external-secrets label in patch target, got %q", cm.Labels["app"])
 					}
-					if cm.Labels[trustedCABundleInjectLabel] != "true" {
-						t.Errorf("expected inject label in patch target, got %q", cm.Labels[trustedCABundleInjectLabel])
+					if cm.Labels[TrustedCABundleInjectLabel] != "true" {
+						t.Errorf("expected inject label in patch target, got %q", cm.Labels[TrustedCABundleInjectLabel])
 					}
 					if patch.Type() != types.JSONPatchType {
 						t.Errorf("expected JSONPatch, got %s", patch.Type())
@@ -184,7 +184,7 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 					return false, nil
 				})
 				cached.CreateCalls(func(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
-					return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, trustedCABundleConfigMapName)
+					return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, ProxyTrustedCABundleConfigMapName)
 				})
 				cached.PatchCalls(func(_ context.Context, _ client.Object, _ client.Patch, _ ...client.PatchOption) error {
 					return commontest.ErrTestClient
@@ -199,7 +199,7 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 				cached.ExistsCalls(func(_ context.Context, _ types.NamespacedName, obj client.Object) (bool, error) {
 					existing := &corev1.ConfigMap{
 						ObjectMeta: metav1.ObjectMeta{
-							Name:      trustedCABundleConfigMapName,
+							Name:      ProxyTrustedCABundleConfigMapName,
 							Namespace: commontest.TestExternalSecretsNamespace,
 							Labels:    nil,
 						},
@@ -231,6 +231,11 @@ func TestEnsureTrustedCABundleConfigMap(t *testing.T) {
 				esc = commontest.TestExternalSecretsConfig()
 			} else {
 				esc = testESCWithProxy()
+			}
+			if proxyConfig, err := r.resolveProxyConfiguration(esc); err != nil {
+				t.Fatalf("resolveProxyConfiguration() error = %v", err)
+			} else {
+				r.proxyConfig = proxyConfig
 			}
 
 			err := r.ensureTrustedCABundleConfigMap(esc, tt.resourceMetadata)

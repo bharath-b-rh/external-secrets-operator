@@ -38,6 +38,8 @@ import (
 	awscred "github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/secretsmanager"
+
+	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
 )
 
 const (
@@ -141,17 +143,11 @@ func WaitForESOResourceReady(
 	})
 }
 
-// externalSecretsConfigGVR is the GroupVersionResource for ExternalSecretsConfig
-var externalSecretsConfigGVR = schema.GroupVersionResource{
-	Group:    "operator.openshift.io",
-	Version:  "v1alpha1",
-	Resource: "externalsecretsconfigs",
-}
-
 // WaitForExternalSecretsConfigReady waits for the ExternalSecretsConfig CR to have both Ready and Degraded
 // conditions present, with Ready=True and Degraded=False. This verifies that the operator has successfully
 // reconciled the configuration and is properly managing both conditions.
-// Returns early with error if Degraded=True.
+// Polls until timeout when Degraded=True so callers can wait for recovery (e.g. trustedCABundle ConfigMap
+// created after an initial NotFound).
 func WaitForExternalSecretsConfigReady(
 	ctx context.Context,
 	client dynamic.Interface,
@@ -161,7 +157,7 @@ func WaitForExternalSecretsConfigReady(
 	var lastReadyCondition, lastDegradedCondition map[string]interface{}
 
 	err := wait.PollUntilContextTimeout(ctx, 5*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
-		u, err := client.Resource(externalSecretsConfigGVR).Get(ctx, name, metav1.GetOptions{})
+		u, err := client.Resource(operatorv1alpha1.ExternalSecretsConfigGVR).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return false, nil // retry on not found or other errors
 		}
@@ -194,12 +190,11 @@ func WaitForExternalSecretsConfigReady(
 			return false, nil // wait until both conditions are reported
 		}
 
-		// Fail fast if degraded
-		if lastDegradedCondition["status"] == "True" {
-			return false, fmt.Errorf("ExternalSecretsConfig %s is degraded: %v", name, lastDegradedCondition["message"])
+		if lastReadyCondition["status"] == "True" && lastDegradedCondition["status"] == "False" {
+			return true, nil
 		}
 
-		return lastReadyCondition["status"] == "True", nil
+		return false, nil
 	})
 
 	// Provide detailed error message on timeout

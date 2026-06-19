@@ -56,16 +56,13 @@ import (
 )
 
 var (
-	// requestEnqueueLabelKey is the label key name used for filtering reconcile
-	// events to include only the resources created by the controller.
-	requestEnqueueLabelKey = "app"
-
-	// requestEnqueueLabelValue is the label value used for filtering reconcile
-	// events to include only the resources created by the controller.
-	requestEnqueueLabelValue = "external-secrets"
-
-	// controllerManagedResources is the list of resources that the controller watches,
-	// and creates informers for.
+	// controllerManagedResources lists the operand resource types directly created,
+	// owned, and lifecycle-managed by this controller. These secondary resources are
+	// filtered using the label selector.
+	// Note: ConfigMaps are intentionally omitted from this slice. Because user-provided
+	// inputs (such as the trustedCABundle) require distinct passive watch predicates, they
+	// are registered and reconciled using a dedicated label selector and namespace-scoped
+	// cache.
 	controllerManagedResources = []client.Object{
 		&rbacv1.ClusterRole{},
 		&rbacv1.ClusterRoleBinding{},
@@ -76,7 +73,6 @@ var (
 		&corev1.Secret{},
 		&corev1.Service{},
 		&corev1.ServiceAccount{},
-		&corev1.ConfigMap{},
 		&webhook.ValidatingWebhookConfiguration{},
 	}
 )
@@ -92,6 +88,8 @@ type Reconciler struct {
 	log                   logr.Logger
 	esm                   *operatorv1alpha1.ExternalSecretsManager
 	optionalResourcesList map[string]struct{}
+	proxyConfig           *operatorv1alpha1.ProxyConfig
+	now                   *common.Now
 }
 
 // +kubebuilder:rbac:groups=operator.openshift.io,resources=externalsecretsconfigs,verbs=get;list;watch;create;update;patch
@@ -128,6 +126,7 @@ func New(ctx context.Context, mgr ctrl.Manager) (*Reconciler, error) {
 		Scheme:                mgr.GetScheme(),
 		esm:                   new(operatorv1alpha1.ExternalSecretsManager),
 		optionalResourcesList: make(map[string]struct{}),
+		now:                   &common.Now{},
 	}
 
 	// Check if cert-manager is installed and register Certificate informer if present
@@ -139,7 +138,7 @@ func New(ctx context.Context, mgr ctrl.Manager) (*Reconciler, error) {
 
 	// Use the manager's client - it reads from the manager's cache
 	// which is configured with label selectors via NewCacheBuilder()
-	c, err := NewClient(mgr, r)
+	c, err := NewClient(mgr)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +157,7 @@ func New(ctx context.Context, mgr ctrl.Manager) (*Reconciler, error) {
 
 // NewClient returns a client that uses the manager's cache.
 // The manager's cache is already configured with proper label selectors via NewCacheBuilder().
-func NewClient(m manager.Manager, r *Reconciler) (operatorclient.CtrlClient, error) {
+func NewClient(m manager.Manager) (operatorclient.CtrlClient, error) {
 	// Use the manager's client directly - it reads from the manager's cache
 	// which is now configured with the same label selectors we previously had in custom cache
 	return &operatorclient.CtrlClientImpl{
@@ -204,16 +203,27 @@ func NewCacheBuilder(config *rest.Config) cache.NewCacheFunc {
 // buildCacheObjectList creates the cache configuration with label selectors
 // for managed resources.
 func buildCacheObjectList(includeCertManager bool) map[client.Object]cache.ByObject {
-	managedResourceLabelReq, _ := labels.NewRequirement(requestEnqueueLabelKey, selection.Equals, []string{requestEnqueueLabelValue})
+	managedResourceLabelReq, _ := labels.NewRequirement(ManagedResourceLabelKey, selection.Equals, []string{ManagedResourceLabelValue})
 	managedResourceLabelReqSelector := labels.NewSelector().Add(*managedResourceLabelReq)
 
 	objectList := make(map[client.Object]cache.ByObject)
 
-	// Resources created by the controller - filter by app=external-secrets label
+	// Operand resources created by the controller are cached by app=external-secrets.
 	for _, res := range controllerManagedResources {
 		objectList[res] = cache.ByObject{
 			Label: managedResourceLabelReqSelector,
 		}
+	}
+
+	// ConfigMaps are scoped to the operand namespace instead of a label selector.
+	// trustedCABundle ConfigMaps are user-provided and only receive the watch label
+	// during reconciliation; namespace scope keeps them visible to the shared informer
+	// that drives Watches() after the label is applied. The API requires these
+	// ConfigMaps to live in the operand namespace, so cardinality stays bounded.
+	objectList[&corev1.ConfigMap{}] = cache.ByObject{
+		Namespaces: map[string]cache.Config{
+			OperandDefaultNamespace: {},
+		},
 	}
 
 	// Own CRs - no label filter needed (controller always needs to read these)
@@ -253,28 +263,35 @@ func checkAndRegisterCertificates(ctx context.Context, mgr ctrl.Manager, r *Reco
 	return exist, nil
 }
 
-// SetupWithManager is for creating a controller instance with predicates and event filters.
+// SetupWithManager registers ExternalSecretsConfig as the primary object and sets up
+// secondary watches on operand resources that enqueue the singleton ExternalSecretsConfig.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// mapFunc translates secondary resource events into a reconcile request for the
+	// cluster-scoped ExternalSecretsConfig singleton.
 	mapFunc := func(ctx context.Context, obj client.Object) []reconcile.Request {
 		r.log.V(4).Info("received reconcile event", "object", fmt.Sprintf("%T", obj), "name", obj.GetName(), "namespace", obj.GetNamespace())
-		return []reconcile.Request{
-			{
-				NamespacedName: types.NamespacedName{
-					Name: common.ExternalSecretsConfigObjectName,
-				},
-			},
-		}
-	}
 
-	isManagedResource := func(object client.Object) bool {
-		labels := object.GetLabels()
-		matches := labels != nil && labels[requestEnqueueLabelKey] == requestEnqueueLabelValue
-		r.log.V(4).Info("predicate evaluation", "object", fmt.Sprintf("%T", object), "name", object.GetName(), "namespace", object.GetNamespace(), "labels", labels, "matches", matches)
-		return matches
+		objLabels := obj.GetLabels()
+		if objLabels != nil && hasManagedOrWatchLabel(objLabels) {
+			return []reconcile.Request{
+				{
+					NamespacedName: types.NamespacedName{
+						Name: common.ExternalSecretsConfigObjectName,
+					},
+				},
+			}
+		}
+
+		r.log.V(4).Info("object not of interest, ignoring reconcile event", "object", fmt.Sprintf("%T", obj), "name", obj.GetName(), "namespace", obj.GetNamespace())
+		return []reconcile.Request{}
 	}
 
 	// On updates, check both old and new objects so that events where the managed
 	// label is removed externally still trigger reconciliation and label restoration.
+	isManagedResource := func(object client.Object) bool {
+		labels := object.GetLabels()
+		return labels != nil && labels[ManagedResourceLabelKey] == ManagedResourceLabelValue
+	}
 	managedResources := predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool {
 			return isManagedResource(e.Object)
@@ -290,11 +307,25 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		},
 	}
 
+	// managedOrWatchedResources limits enqueues to operator-managed resources (app=external-secrets) and
+	// user referenced resources (like ConfigMaps) having the watch label (externalsecretsconfig.operator.openshift.io/watching)
+	// so unrelated resource changes do not trigger reconciliation.
+	managedOrWatchedResources := predicate.NewPredicateFuncs(func(object client.Object) bool {
+		if object.GetLabels() == nil {
+			return false
+		}
+		return hasManagedOrWatchLabel(object.GetLabels())
+	})
+
+	// Resources like Deployments are reconciled on spec generation or managed-label changes.
 	withIgnoreStatusUpdatePredicates := builder.WithPredicates(
 		predicate.Or(predicate.GenerationChangedPredicate{}, predicate.LabelChangedPredicate{}),
 		managedResources,
 	)
 	managedResourcePredicate := builder.WithPredicates(managedResources)
+
+	// Resources like ConfigMaps are reconciled for resourceVersion bumps, and not for generation changes.
+	managedOrWatchedResourcePredicates := builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}, managedOrWatchedResources)
 
 	mgrBuilder := ctrl.NewControllerManagedBy(mgr).
 		For(&operatorv1alpha1.ExternalSecretsConfig{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
@@ -306,10 +337,13 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 			mgrBuilder.Watches(res, handler.EnqueueRequestsFromMapFunc(mapFunc), withIgnoreStatusUpdatePredicates)
 		case &corev1.Secret{}:
 			mgrBuilder.WatchesMetadata(res, handler.EnqueueRequestsFromMapFunc(mapFunc), builder.WithPredicates(predicate.LabelChangedPredicate{}))
-		default: // Trusted CA ConfigMap depends on this case
+		default:
 			mgrBuilder.Watches(res, handler.EnqueueRequestsFromMapFunc(mapFunc), managedResourcePredicate)
 		}
 	}
+
+	// Admit operator-managed plus trustedCABundle ConfigMaps.
+	mgrBuilder.Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(mapFunc), managedOrWatchedResourcePredicates)
 
 	// Watch ExternalSecretsManager spec changes (features, globalConfig). ESM is not
 	// labeled app=external-secrets, so it must not use the managedResources predicate.
@@ -409,6 +443,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			// NotFound errors, since they can't be fixed by an immediate
 			// requeue (have to wait for a new notification).
 			r.log.V(1).Info("externalsecretsmanagers.operator.openshift.io object not found, continuing without it")
+			r.esm = &operatorv1alpha1.ExternalSecretsManager{}
 		} else {
 			return ctrl.Result{}, fmt.Errorf("failed to fetch externalsecretsmanagers.operator.openshift.io %q during reconciliation: %w", esmNamespacedName, err)
 		}
@@ -444,7 +479,7 @@ func (r *Reconciler) reconcileDeploymentFailureResult(
 	isFatal := common.IsIrrecoverableError(reconcileErr)
 	isUserConfig := common.IsUserConfigurationError(reconcileErr)
 
-	degradedCond, readyCond := deploymentFailureConditions(observedGeneration, reconcileErr, isFatal, isUserConfig)
+	degradedCond, readyCond := deploymentFailureConditions(observedGeneration, reconcileErr)
 
 	errUpdate := r.updateStatusConditionsOnFailure(esc, degradedCond, readyCond, isFatal, reconcileErr)
 
@@ -463,8 +498,10 @@ func (r *Reconciler) reconcileDeploymentFailureResult(
 func deploymentFailureConditions(
 	observedGeneration int64,
 	reconcileErr error,
-	isFatal, isUserConfig bool,
 ) (degradedCond, readyCond metav1.Condition) {
+	isFatal := common.IsIrrecoverableError(reconcileErr)
+	isUserConfig := common.IsUserConfigurationError(reconcileErr)
+
 	degradedCond = metav1.Condition{
 		Type:               operatorv1alpha1.Degraded,
 		ObservedGeneration: observedGeneration,
@@ -502,7 +539,7 @@ func userConfigurationFailureResult(reconcileErr error, errUpdate error) (ctrl.R
 		return ctrl.Result{}, errUpdate
 	}
 	// Existing referenced objects are watched via resourceVersion; wait for user fixes instead of polling.
-	// NotFound still requeues because watch events are not received for unmanaged objects until reconciled once.
+	// NotFound still requeues because the watch events are not received for unmanaged objects it's reconciled once.
 	if common.IsUserConfigurationNotFound(reconcileErr) {
 		return ctrl.Result{RequeueAfter: common.DefaultRequeueTime}, nil
 	}
@@ -534,6 +571,10 @@ func (r *Reconciler) reconcileDeploymentSuccessResult(
 	esc *operatorv1alpha1.ExternalSecretsConfig,
 	observedGeneration int64,
 ) (ctrl.Result, error) {
+	// Successful reconciliation clears the once gate so validation warnings can be recorded again
+	// if misconfiguration returns after the operand was fully healthy.
+	r.now.Reset()
+
 	degradedCond := metav1.Condition{
 		Type:               operatorv1alpha1.Degraded,
 		Status:             metav1.ConditionFalse,
