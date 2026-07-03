@@ -147,7 +147,7 @@ func (r *Reconciler) getDeploymentObject(assetName string, esc *operatorv1alpha1
 	if err := r.updateNodeSelector(deployment, esc); err != nil {
 		return nil, fmt.Errorf("failed to update node selector: %w", err)
 	}
-	if err := r.updateProxyConfiguration(deployment, esc); err != nil {
+	if err := r.updateProxyConfiguration(deployment, esc, assetName); err != nil {
 		return nil, fmt.Errorf("failed to update proxy configuration: %w", err)
 	}
 	if err := r.applyUserDeploymentConfigs(deployment, esc, assetName); err != nil {
@@ -469,11 +469,11 @@ func updateSecretVolumeConfig(deployment *appsv1.Deployment, volumeName, secretN
 }
 
 // updateProxyConfiguration applies all proxy-related configuration to the deployment.
-func (r *Reconciler) updateProxyConfiguration(deployment *appsv1.Deployment, esc *operatorv1alpha1.ExternalSecretsConfig) error {
+func (r *Reconciler) updateProxyConfiguration(deployment *appsv1.Deployment, esc *operatorv1alpha1.ExternalSecretsConfig, assetName string) error {
 	proxyConfig := r.getProxyConfiguration(esc)
 
 	r.updateProxyEnvironmentVariables(deployment, proxyConfig)
-	if err := r.updateTrustedCABundleVolumes(deployment, proxyConfig); err != nil {
+	if err := r.updateOperandTrustedCAVolumes(deployment, esc, proxyConfig, assetName); err != nil {
 		return fmt.Errorf("failed to update trusted CA bundle volumes: %w", err)
 	}
 
@@ -569,32 +569,99 @@ func (r *Reconciler) removeProxyEnvVars(container *corev1.Container) {
 	container.Env = filteredEnv
 }
 
-// updateTrustedCABundleVolumes adds or removes trusted CA bundle volume and volume mounts to/from the deployment
-// based on proxy configuration presence.
-func (r *Reconciler) updateTrustedCABundleVolumes(deployment *appsv1.Deployment, proxyConfig *operatorv1alpha1.ProxyConfig) error {
-	if proxyConfig != nil {
-		// Add trusted CA bundle volume and volume mounts
-		return r.addTrustedCABundleVolumes(deployment)
-	} else {
-		// Remove trusted CA bundle volume and volume mounts
+// updateOperandTrustedCAVolumes adds or removes trusted CA bundle volumes based on proxy and enterprise configuration.
+func (r *Reconciler) updateOperandTrustedCAVolumes(deployment *appsv1.Deployment, esc *operatorv1alpha1.ExternalSecretsConfig, proxyConfig *operatorv1alpha1.ProxyConfig, assetName string) error {
+	platformCA := proxyConfig != nil
+	enterpriseRef := getAdditionalTrustedCAConfigMapRef(esc)
+	enterpriseCA := enterpriseRef != nil && isOperandTrustedCAMountSupported(assetName)
+
+	switch {
+	case !platformCA && !enterpriseCA:
 		return r.removeTrustedCABundleVolumes(deployment)
+	case enterpriseCA:
+		if err := r.validateEnterpriseCAConfigMap(enterpriseRef); err != nil {
+			return err
+		}
+	}
+
+	trustedCAVolume, err := buildOperandTrustedCAVolume(platformCA, enterpriseCA, enterpriseRef)
+	if err != nil {
+		return err
+	}
+
+	return r.addOperandTrustedCAVolumes(deployment, trustedCAVolume)
+}
+
+func buildOperandTrustedCAVolume(platformCA, enterpriseCA bool, enterpriseRef *operatorv1alpha1.AdditionalTrustedCAConfigMapRef) (corev1.Volume, error) {
+	switch {
+	case platformCA && enterpriseCA:
+		key := getEnterpriseCAConfigMapKey(enterpriseRef)
+		return corev1.Volume{
+			Name: trustedCABundleVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{
+					Sources: []corev1.VolumeProjection{
+						{
+							ConfigMap: &corev1.ConfigMapProjection{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: trustedCABundleConfigMapName,
+								},
+								Optional: ptr.To(true),
+							},
+						},
+						{
+							ConfigMap: &corev1.ConfigMapProjection{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: enterpriseTrustedCABundleConfigMapName,
+								},
+								Items: []corev1.KeyToPath{
+									{
+										Key:  key,
+										Path: enterpriseTrustedCAProjectedFileName,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}, nil
+	case platformCA:
+		return corev1.Volume{
+			Name: trustedCABundleVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: trustedCABundleConfigMapName,
+					},
+				},
+			},
+		}, nil
+	case enterpriseCA:
+		key := getEnterpriseCAConfigMapKey(enterpriseRef)
+		return corev1.Volume{
+			Name: trustedCABundleVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: enterpriseTrustedCABundleConfigMapName,
+					},
+					Items: []corev1.KeyToPath{
+						{
+							Key:  key,
+							Path: key,
+						},
+					},
+				},
+			},
+		}, nil
+	default:
+		return corev1.Volume{}, fmt.Errorf("trusted CA volume requested without platform or enterprise configuration")
 	}
 }
 
-// addTrustedCABundleVolumes adds trusted CA bundle volume and volume mounts to the deployment.
-func (r *Reconciler) addTrustedCABundleVolumes(deployment *appsv1.Deployment) error {
-	// Add the trusted CA bundle volume to the pod spec
-	trustedCAVolume := corev1.Volume{
-		Name: trustedCABundleVolumeName,
-		VolumeSource: corev1.VolumeSource{
-			ConfigMap: &corev1.ConfigMapVolumeSource{
-				LocalObjectReference: corev1.LocalObjectReference{
-					Name: trustedCABundleConfigMapName,
-				},
-			},
-		},
-	}
-
+// addOperandTrustedCAVolumes adds the trusted CA bundle volume and volume mounts to the deployment.
+func (r *Reconciler) addOperandTrustedCAVolumes(deployment *appsv1.Deployment, trustedCAVolume corev1.Volume) error {
 	// Check if the volume already exists, if not add it
 	volumeExists := false
 	for i, volume := range deployment.Spec.Template.Spec.Volumes {

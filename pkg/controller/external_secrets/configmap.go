@@ -3,9 +3,12 @@ package external_secrets
 import (
 	"fmt"
 	"maps"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	operatorv1alpha1 "github.com/openshift/external-secrets-operator/api/v1alpha1"
@@ -88,4 +91,129 @@ func getTrustedCABundleLabels(resourceLabels map[string]string) map[string]strin
 	maps.Copy(labels, resourceLabels)
 	labels[trustedCABundleInjectLabel] = "true"
 	return labels
+}
+
+// ensureEnterpriseTrustedCAConfigMap syncs enterprise CA data from the user-referenced ConfigMap
+// into an operator-managed ConfigMap in the operand namespace for volume mounting.
+func (r *Reconciler) ensureEnterpriseTrustedCAConfigMap(esc *operatorv1alpha1.ExternalSecretsConfig, resourceMetadata common.ResourceMetadata) error {
+	ref := getAdditionalTrustedCAConfigMapRef(esc)
+	if ref == nil {
+		r.log.V(4).Info("no enterprise trusted CA ConfigMap reference found, skipping enterprise CA ConfigMap sync")
+		return nil
+	}
+
+	if err := r.validateEnterpriseCAConfigMap(ref); err != nil {
+		return err
+	}
+
+	key := getEnterpriseCAConfigMapKey(ref)
+	userConfigMap := &corev1.ConfigMap{}
+	userConfigMapKey := types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}
+	if err := r.UncachedClient.Get(r.ctx, userConfigMapKey, userConfigMap); err != nil {
+		return common.FromClientError(err, "failed to get enterprise CA ConfigMap %s", userConfigMapKey.String())
+	}
+
+	operandNamespace := getNamespace(esc)
+	desiredConfigMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      enterpriseTrustedCABundleConfigMapName,
+			Namespace: operandNamespace,
+			Labels:    maps.Clone(resourceMetadata.Labels),
+		},
+		Data: map[string]string{
+			key: userConfigMap.Data[key],
+		},
+	}
+	common.ApplyResourceMetadata(desiredConfigMap, resourceMetadata)
+
+	configMapName := fmt.Sprintf("%s/%s", desiredConfigMap.GetNamespace(), desiredConfigMap.GetName())
+	r.log.V(4).Info("reconciling enterprise trusted CA ConfigMap resource", "name", configMapName)
+
+	existingConfigMap := &corev1.ConfigMap{}
+	exist, err := r.Exists(r.ctx, client.ObjectKeyFromObject(desiredConfigMap), existingConfigMap)
+	if err != nil {
+		return common.FromClientError(err, "failed to check %s enterprise trusted CA ConfigMap resource already exists", configMapName)
+	}
+
+	if !exist {
+		if err := r.Create(r.ctx, desiredConfigMap); err != nil {
+			return common.FromClientError(err, "failed to create %s enterprise trusted CA ConfigMap resource", configMapName)
+		}
+		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "enterprise trusted CA ConfigMap resource %s created", configMapName)
+		return nil
+	}
+
+	if common.ObjectMetadataModified(desiredConfigMap, existingConfigMap, &resourceMetadata) ||
+		!mapsEqual(desiredConfigMap.Data, existingConfigMap.Data) {
+		r.log.V(1).Info("enterprise trusted CA ConfigMap has been modified, updating to desired state", "name", configMapName)
+		desiredConfigMap.ResourceVersion = existingConfigMap.ResourceVersion
+		common.RemoveObsoleteAnnotations(desiredConfigMap, resourceMetadata)
+		if err := r.UpdateWithRetry(r.ctx, desiredConfigMap); err != nil {
+			return common.FromClientError(err, "failed to update %s enterprise trusted CA ConfigMap resource", configMapName)
+		}
+		r.eventRecorder.Eventf(esc, corev1.EventTypeNormal, "Reconciled", "enterprise trusted CA ConfigMap resource %s reconciled back to desired state", configMapName)
+	} else {
+		r.log.V(4).Info("enterprise trusted CA ConfigMap resource already exists and is in expected state", "name", configMapName)
+	}
+
+	return nil
+}
+
+// validateEnterpriseCAConfigMap verifies the referenced ConfigMap exists and contains PEM-encoded CA data.
+func (r *Reconciler) validateEnterpriseCAConfigMap(ref *operatorv1alpha1.AdditionalTrustedCAConfigMapRef) error {
+	if ref == nil {
+		return nil
+	}
+
+	key := getEnterpriseCAConfigMapKey(ref)
+	configMap := &corev1.ConfigMap{}
+	configMapKey := types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}
+	if err := r.UncachedClient.Get(r.ctx, configMapKey, configMap); err != nil {
+		if apierrors.IsNotFound(err) {
+			return common.NewConfigurationError(
+				err,
+				"enterprise CA ConfigMap %s not found",
+				configMapKey.String(),
+			)
+		}
+		return common.FromClientError(err, "failed to get enterprise CA ConfigMap %s", configMapKey.String())
+	}
+
+	value, ok := configMap.Data[key]
+	if !ok {
+		return common.NewIrrecoverableError(
+			fmt.Errorf("key %q not found in ConfigMap %s", key, configMapKey.String()),
+			"enterprise CA ConfigMap %s is missing required key %q",
+			configMapKey.String(),
+			key,
+		)
+	}
+
+	if !isPEMEncodedCAContent(value) {
+		return common.NewIrrecoverableError(
+			fmt.Errorf("key %q in ConfigMap %s does not contain PEM-encoded CA certificates", key, configMapKey.String()),
+			"enterprise CA ConfigMap %s key %q must contain PEM-encoded CA certificates",
+			configMapKey.String(),
+			key,
+		)
+	}
+
+	return nil
+}
+
+func isPEMEncodedCAContent(data string) bool {
+	trimmed := strings.TrimSpace(data)
+	return strings.Contains(trimmed, "BEGIN CERTIFICATE") || strings.Contains(trimmed, "BEGIN TRUSTED CERTIFICATE")
+}
+
+func mapsEqual(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
 }

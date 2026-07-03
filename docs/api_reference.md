@@ -16,6 +16,27 @@ Package v1alpha1 contains API Schema definitions for the operator v1alpha1 API g
 
 
 
+#### AdditionalTrustedCAConfigMapRef
+
+
+
+AdditionalTrustedCAConfigMapRef references a ConfigMap containing PEM-encoded CA certificates
+used to extend outbound TLS trust for operand controller and webhook workloads.
+
+
+
+_Appears in:_
+- [ApplicationConfig](#applicationconfig)
+- [CommonConfigs](#commonconfigs)
+- [GlobalConfig](#globalconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | name is the ConfigMap resource name containing trusted CA certificates. |  | MaxLength: 253 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` <br /> |
+| `namespace` _string_ | namespace is the namespace of the ConfigMap resource. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` <br /> |
+| `key` _string_ | key is the ConfigMap data key holding PEM-encoded CA certificates.<br />When unset, the controller defaults to ca-bundle.crt. | ca-bundle.crt | MaxLength: 253 <br />MinLength: 1 <br />Pattern: `^[-._a-zA-Z0-9]+$` <br /> |
+
+
 #### ApplicationConfig
 
 
@@ -35,6 +56,7 @@ _Appears in:_
 | `tolerations` _[Toleration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.32/#toleration-v1-core) array_ | tolerations is for setting the pod tolerations.<br />ref: https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/<br />This field can have a maximum of 50 entries. |  | MaxItems: 50 <br />MinItems: 0 <br /> |
 | `nodeSelector` _object (keys:string, values:string)_ | nodeSelector is for defining the scheduling criteria using node labels.<br />ref: https://kubernetes.io/docs/concepts/configuration/assign-pod-node/<br />This field can have a maximum of 50 entries. |  | MaxProperties: 50 <br />MinProperties: 0 <br /> |
 | `proxy` _[ProxyConfig](#proxyconfig)_ | proxy is for setting the proxy configurations which will be made available in operand containers managed by the operator as environment variables. |  |  |
+| `additionalTrustedCAConfigMapRef` _[AdditionalTrustedCAConfigMapRef](#additionaltrustedcaconfigmapref)_ | additionalTrustedCAConfigMapRef references a ConfigMap containing enterprise PKI CA certificates<br />to mount into external-secrets controller and webhook operand workloads for outbound TLS verification. |  |  |
 | `operatingNamespace` _string_ | operatingNamespace is for restricting the external-secrets operations to the provided namespace.<br />When configured `ClusterSecretStore` and `ClusterExternalSecret` are implicitly disabled. |  | MaxLength: 63 <br />MinLength: 1 <br /> |
 | `webhookConfig` _[WebhookConfig](#webhookconfig)_ | webhookConfig is for configuring external-secrets webhook specifics. |  |  |
 
@@ -112,6 +134,7 @@ _Appears in:_
 | `tolerations` _[Toleration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.32/#toleration-v1-core) array_ | tolerations is for setting the pod tolerations.<br />ref: https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/<br />This field can have a maximum of 50 entries. |  | MaxItems: 50 <br />MinItems: 0 <br /> |
 | `nodeSelector` _object (keys:string, values:string)_ | nodeSelector is for defining the scheduling criteria using node labels.<br />ref: https://kubernetes.io/docs/concepts/configuration/assign-pod-node/<br />This field can have a maximum of 50 entries. |  | MaxProperties: 50 <br />MinProperties: 0 <br /> |
 | `proxy` _[ProxyConfig](#proxyconfig)_ | proxy is for setting the proxy configurations which will be made available in operand containers managed by the operator as environment variables. |  |  |
+| `additionalTrustedCAConfigMapRef` _[AdditionalTrustedCAConfigMapRef](#additionaltrustedcaconfigmapref)_ | additionalTrustedCAConfigMapRef references a ConfigMap containing enterprise PKI CA certificates<br />to mount into external-secrets controller and webhook operand workloads for outbound TLS verification. |  |  |
 
 
 #### ComponentConfig
@@ -411,6 +434,7 @@ _Appears in:_
 | `tolerations` _[Toleration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.32/#toleration-v1-core) array_ | tolerations is for setting the pod tolerations.<br />ref: https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/<br />This field can have a maximum of 50 entries. |  | MaxItems: 50 <br />MinItems: 0 <br /> |
 | `nodeSelector` _object (keys:string, values:string)_ | nodeSelector is for defining the scheduling criteria using node labels.<br />ref: https://kubernetes.io/docs/concepts/configuration/assign-pod-node/<br />This field can have a maximum of 50 entries. |  | MaxProperties: 50 <br />MinProperties: 0 <br /> |
 | `proxy` _[ProxyConfig](#proxyconfig)_ | proxy is for setting the proxy configurations which will be made available in operand containers managed by the operator as environment variables. |  |  |
+| `additionalTrustedCAConfigMapRef` _[AdditionalTrustedCAConfigMapRef](#additionaltrustedcaconfigmapref)_ | additionalTrustedCAConfigMapRef references a ConfigMap containing enterprise PKI CA certificates<br />to mount into external-secrets controller and webhook operand workloads for outbound TLS verification. |  |  |
 | `labels` _object (keys:string, values:string)_ | labels to apply to all resources created by the operator.<br />This field can have a maximum of 20 entries. |  | MaxProperties: 20 <br />MinProperties: 0 <br /> |
 
 

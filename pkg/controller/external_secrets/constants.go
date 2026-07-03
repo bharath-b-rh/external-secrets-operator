@@ -66,6 +66,15 @@ const (
 	// https://cs.opensource.google/go/go/+/refs/tags/go1.24.4:src/crypto/x509/root_linux.go;l=22
 	trustedCABundleMountPath = "/etc/pki/tls/certs"
 
+	// enterpriseTrustedCABundleConfigMapName is the operand-namespace ConfigMap holding synced enterprise CA data.
+	enterpriseTrustedCABundleConfigMapName = externalsecretsCommonName + "-additional-trusted-ca"
+
+	// defaultEnterpriseCAConfigMapKey is the default ConfigMap data key for enterprise CA certificates.
+	defaultEnterpriseCAConfigMapKey = "ca-bundle.crt"
+
+	// enterpriseTrustedCAProjectedFileName is the filename used when projecting enterprise CA alongside platform CA.
+	enterpriseTrustedCAProjectedFileName = "enterprise-ca-bundle.crt"
+
 	// Proxy environment variable names (uppercase).
 	httpProxyEnvVar  = "HTTP_PROXY"
 	httpsProxyEnvVar = "HTTPS_PROXY"

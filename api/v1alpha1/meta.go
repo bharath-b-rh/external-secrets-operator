@@ -46,7 +46,35 @@ type SecretReference struct {
 	Name string `json:"name,omitempty"`
 }
 
+// AdditionalTrustedCAConfigMapRef references a ConfigMap containing PEM-encoded CA certificates
+// used to extend outbound TLS trust for operand controller and webhook workloads.
+type AdditionalTrustedCAConfigMapRef struct {
+	// name is the ConfigMap resource name containing trusted CA certificates.
+	// +kubebuilder:validation:MinLength:=1
+	// +kubebuilder:validation:MaxLength:=253
+	// +kubebuilder:validation:Pattern:=^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+	// +required
+	Name string `json:"name"`
+
+	// namespace is the namespace of the ConfigMap resource.
+	// +kubebuilder:validation:MinLength:=1
+	// +kubebuilder:validation:MaxLength:=63
+	// +kubebuilder:validation:Pattern:=^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+	// +required
+	Namespace string `json:"namespace"`
+
+	// key is the ConfigMap data key holding PEM-encoded CA certificates.
+	// When unset, the controller defaults to ca-bundle.crt.
+	// +kubebuilder:validation:MinLength:=1
+	// +kubebuilder:validation:MaxLength:=253
+	// +kubebuilder:validation:Pattern:=^[-._a-zA-Z0-9]+$
+	// +kubebuilder:default:="ca-bundle.crt"
+	// +optional
+	Key string `json:"key,omitempty"`
+}
+
 // CommonConfigs are the common configurations available for all the operands managed by the operator.
+// +kubebuilder:validation:XValidation:rule="!has(self.additionalTrustedCAConfigMapRef) || (has(self.additionalTrustedCAConfigMapRef.name) && self.additionalTrustedCAConfigMapRef.name != ” && has(self.additionalTrustedCAConfigMapRef.namespace) && self.additionalTrustedCAConfigMapRef.namespace != ”)",message="name and namespace must be provided when additionalTrustedCAConfigMapRef is set."
 type CommonConfigs struct {
 	// logLevel supports value range as per [Kubernetes logging guidelines](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-instrumentation/logging.md#what-method-to-use).
 	// +kubebuilder:default:=1
@@ -87,6 +115,11 @@ type CommonConfigs struct {
 	// proxy is for setting the proxy configurations which will be made available in operand containers managed by the operator as environment variables.
 	// +optional
 	Proxy *ProxyConfig `json:"proxy,omitempty"`
+
+	// additionalTrustedCAConfigMapRef references a ConfigMap containing enterprise PKI CA certificates
+	// to mount into external-secrets controller and webhook operand workloads for outbound TLS verification.
+	// +optional
+	AdditionalTrustedCAConfigMapRef *AdditionalTrustedCAConfigMapRef `json:"additionalTrustedCAConfigMapRef,omitempty"`
 }
 
 // ProxyConfig is for setting the proxy configurations which will be made available in operand containers managed by the operator as environment variables.
