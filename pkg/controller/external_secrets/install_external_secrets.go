@@ -70,6 +70,11 @@ func (r *Reconciler) reconcileExternalSecretsDeployment(esc *operatorv1alpha1.Ex
 		return err
 	}
 
+	if err := r.ensureEnterpriseTrustedCAConfigMap(esc, resourceMetadata); err != nil {
+		r.log.Error(err, "failed to ensure enterprise trusted CA ConfigMap")
+		return err
+	}
+
 	if err := r.createOrApplyRBACResource(esc, resourceMetadata, recon); err != nil {
 		r.log.Error(err, "failed to reconcile rbac resources")
 		return err

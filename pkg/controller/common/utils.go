@@ -524,6 +524,16 @@ func volumesEqual(desired, fetched []corev1.Volume) bool {
 			}
 		}
 
+		// Check Projected volume
+		if desiredVol.Projected != nil {
+			if fetchedVol.Projected == nil {
+				return false
+			}
+			if !reflect.DeepEqual(desiredVol.Projected, fetchedVol.Projected) {
+				return false
+			}
+		}
+
 		// Add other volume types as needed (PVC, HostPath, etc.)
 	}
 

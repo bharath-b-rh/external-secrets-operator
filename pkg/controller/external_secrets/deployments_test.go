@@ -1195,7 +1195,7 @@ func TestUpdateProxyConfiguration(t *testing.T) {
 				esm: tt.externalSecretsManager,
 			}
 
-			err := r.updateProxyConfiguration(tt.deployment, tt.externalSecretsConfig)
+			err := r.updateProxyConfiguration(tt.deployment, tt.externalSecretsConfig, controllerDeploymentAssetName)
 			if err != nil {
 				t.Errorf("updateProxyConfiguration() error = %v", err)
 				return

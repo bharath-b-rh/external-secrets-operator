@@ -402,6 +402,8 @@ func (r *Reconciler) processReconcileRequest(esc *operatorv1alpha1.ExternalSecre
 	if err != nil {
 		r.log.Error(err, "failed to reconcile external-secrets deployment", "request", req)
 		isFatal := common.IsIrrecoverableError(err)
+		isConfiguration := common.IsConfigurationError(err)
+		isDegraded := isFatal || isConfiguration
 
 		degradedCond := metav1.Condition{
 			Type:               operatorv1alpha1.Degraded,
@@ -412,13 +414,19 @@ func (r *Reconciler) processReconcileRequest(esc *operatorv1alpha1.ExternalSecre
 			ObservedGeneration: observedGeneration,
 		}
 
-		if isFatal {
+		if isDegraded {
 			degradedCond.Status = metav1.ConditionTrue
 			degradedCond.Reason = operatorv1alpha1.ReasonFailed
-			degradedCond.Message = fmt.Sprintf("reconciliation failed with irrecoverable error, not retrying: %v", err)
+			degradedCond.Message = fmt.Sprintf("reconciliation failed: %v", err)
 
 			readyCond.Status = metav1.ConditionFalse
-			readyCond.Reason = operatorv1alpha1.ReasonReady
+			if isFatal {
+				readyCond.Reason = operatorv1alpha1.ReasonReady
+				readyCond.Message = fmt.Sprintf("reconciliation failed with irrecoverable error, not retrying: %v", err)
+			} else {
+				readyCond.Reason = operatorv1alpha1.ReasonInProgress
+				readyCond.Message = fmt.Sprintf("reconciliation failed, retrying: %v", err)
+			}
 		} else {
 			degradedCond.Status = metav1.ConditionFalse
 			degradedCond.Reason = operatorv1alpha1.ReasonReady

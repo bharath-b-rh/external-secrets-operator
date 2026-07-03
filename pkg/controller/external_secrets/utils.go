@@ -119,6 +119,27 @@ func getOperatingNamespace(esc *operatorv1alpha1.ExternalSecretsConfig) string {
 	return esc.Spec.ApplicationConfig.OperatingNamespace
 }
 
+// getAdditionalTrustedCAConfigMapRef returns the enterprise CA ConfigMap reference from ESC appConfig.
+func getAdditionalTrustedCAConfigMapRef(esc *operatorv1alpha1.ExternalSecretsConfig) *operatorv1alpha1.AdditionalTrustedCAConfigMapRef {
+	if esc == nil {
+		return nil
+	}
+	return esc.Spec.ApplicationConfig.AdditionalTrustedCAConfigMapRef
+}
+
+// getEnterpriseCAConfigMapKey returns the ConfigMap data key for enterprise CA content.
+func getEnterpriseCAConfigMapKey(ref *operatorv1alpha1.AdditionalTrustedCAConfigMapRef) string {
+	if ref == nil || ref.Key == "" {
+		return defaultEnterpriseCAConfigMapKey
+	}
+	return ref.Key
+}
+
+// isOperandTrustedCAMountSupported reports whether the deployment asset receives enterprise CA mounts.
+func isOperandTrustedCAMountSupported(assetName string) bool {
+	return assetName == controllerDeploymentAssetName || assetName == webhookDeploymentAssetName
+}
+
 func (r *Reconciler) IsCertManagerInstalled() bool {
 	_, ok := r.optionalResourcesList[certificateCRDGKV]
 	return ok

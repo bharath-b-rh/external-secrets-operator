@@ -22,6 +22,11 @@ const (
 	// Examples include temporary network issues or resource conflicts.
 	// The reconciler should requeue when encountering this error type.
 	RetryRequiredError ErrorReason = "RetryRequiredError"
+
+	// ConfigurationError indicates user-provided configuration is incomplete but may become valid later.
+	// Examples include a referenced ConfigMap that does not exist yet.
+	// The reconciler should mark Degraded and requeue when encountering this error type.
+	ConfigurationError ErrorReason = "ConfigurationError"
 )
 
 // ReconcileError represents an error that occurred during reconciliation.
@@ -66,6 +71,19 @@ func NewRetryRequiredError(err error, message string, args ...any) *ReconcileErr
 	}
 }
 
+// NewConfigurationError creates a new ReconcileError with ConfigurationError reason.
+// Returns nil if the provided error is nil.
+func NewConfigurationError(err error, message string, args ...any) *ReconcileError {
+	if err == nil {
+		return nil
+	}
+	return &ReconcileError{
+		Reason:  ConfigurationError,
+		Message: fmt.Sprintf(message, args...),
+		Err:     err,
+	}
+}
+
 // IsIrrecoverableError checks if the given error is a ReconcileError
 // with IrrecoverableError reason. Returns false if err is nil or
 // not a ReconcileError.
@@ -73,6 +91,15 @@ func IsIrrecoverableError(err error) bool {
 	rerr := &ReconcileError{}
 	if errors.As(err, &rerr) {
 		return rerr.Reason == IrrecoverableError
+	}
+	return false
+}
+
+// IsConfigurationError checks if the given error is a ReconcileError with ConfigurationError reason.
+func IsConfigurationError(err error) bool {
+	rerr := &ReconcileError{}
+	if errors.As(err, &rerr) {
+		return rerr.Reason == ConfigurationError
 	}
 	return false
 }
