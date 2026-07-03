@@ -1,0 +1,58 @@
+stage: constitution
+template: templates/constitution-template.md
+artifact: constitution.md
+version: 1
+eval_count: 3
+evals:
+  - id: eval-r001-const-001
+    round: 1
+    stage: constitution
+    source_issue_ids: []
+    patterns: [PAT-001]
+    input_refs:
+      - evals/inputs/01-ep-ard.md
+    prompt: |
+      Constitution must guard against upstream CRD/bindata scope creep for operator-only CA field.
+    assertions:
+      must_mention:
+        - create-or-update
+        - bindata
+      must_not_use:
+        - SSA-first
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 80
+
+  - id: eval-r001-const-002
+    round: 1
+    stage: constitution
+    source_issue_ids: [ISSUE-003]
+    patterns: [PAT-003]
+    input_refs:
+      - evals/inputs/04-user-stories.md
+    prompt: |
+      Constitution should require read-only access to user ConfigMaps; no writing CA bytes to user CM.
+    assertions:
+      must_mention:
+        - CtrlClient
+      must_follow_constitution: true
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 80
+
+  - id: eval-r001-const-003
+    round: 1
+    stage: constitution
+    source_issue_ids: [ISSUE-001]
+    patterns: [PAT-004]
+    input_refs:
+      - evals/inputs/05-repo-prs.md
+    prompt: |
+      Constitution verification pairing: API tests require generated CRD consistency.
+    assertions:
+      must_mention:
+        - make verify
+        - make test-apis
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 80

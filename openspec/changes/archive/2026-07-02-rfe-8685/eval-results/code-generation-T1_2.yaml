@@ -1,0 +1,7 @@
+task_id: T1_2
+oape_command: api-generate-tests
+evals_applied: []
+score_percent: null
+pass_count: 0
+total_count: 0
+note: "evals/code-generation_eval.yaml contains no cases for api-generate-tests; verification via make test-apis"

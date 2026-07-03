@@ -1,0 +1,7 @@
+task_id: T1_1
+oape_command: api-generate
+evals_applied: []
+score_percent: null
+pass_count: 0
+total_count: 0
+note: "evals/code-generation_eval.yaml contains no cases for api-generate; verification via go build/go vet only per task acceptance criteria"

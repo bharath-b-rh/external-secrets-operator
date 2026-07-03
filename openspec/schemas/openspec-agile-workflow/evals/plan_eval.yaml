@@ -1,0 +1,62 @@
+stage: plan
+template: templates/plan-template.md
+artifact: plan.md
+version: 1
+eval_count: 3
+evals:
+  - id: eval-r001-plan-001
+    round: 1
+    stage: plan
+    source_issue_ids: [ISSUE-003]
+    patterns: [PAT-002, PAT-003]
+    input_refs:
+      - evals/inputs/04-user-stories.md
+      - evals/inputs/03-original-repo.md
+    prompt: |
+      Plan must resolve A-011 proxy×enterprise matrix and cross-namespace ConfigMap mount strategy.
+    assertions:
+      must_mention:
+        - A-011
+        - projected
+        - controller
+        - webhook
+      must_not_claim:
+        - cert-controller enterprise mount
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 80
+
+  - id: eval-r001-plan-002
+    round: 1
+    stage: plan
+    source_issue_ids: []
+    patterns: [PAT-001]
+    input_refs:
+      - evals/inputs/01-ep-ard.md
+    prompt: |
+      Plan separates operator ESC field from store caProvider docs-only path (A-007).
+    assertions:
+      must_mention:
+        - A-007
+        - caProvider
+        - appConfig
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 80
+
+  - id: eval-r001-plan-003
+    round: 1
+    stage: plan
+    source_issue_ids: []
+    patterns: [PAT-002]
+    input_refs:
+      - evals/inputs/03-original-repo.md
+    prompt: |
+      Plan documents decoupling enterprise CA from proxy gate in configmap.go/deployments.go.
+    assertions:
+      must_mention:
+        - getProxyConfiguration
+        - ensureTrustedCABundleConfigMap
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 80

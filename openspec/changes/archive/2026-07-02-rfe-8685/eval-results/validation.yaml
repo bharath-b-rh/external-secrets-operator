@@ -1,0 +1,35 @@
+artifact_id: validation
+artifact_path: openspec/changes/rfe-8685/validation.json
+stage: validation
+stage_eval_file: null
+gate: rubric_only
+scored_at: "2026-07-02T09:00:00Z"
+overall_score: 56
+overall_pass: false
+rubric:
+  pass_threshold: 80
+  completeness_score: 58
+  quality_score: 52
+  overall_status: NEEDS_REVISION
+cases:
+  - id: rubric-completeness
+    score: 58
+    pass: false
+    failures:
+      - "Missing explicit user personas / actors"
+      - "No testable acceptance criteria or edge cases"
+      - "Scope boundary unclear between operator CRDs and upstream SecretStore/ClusterSecretStore"
+      - "Dependencies and upgrade semantics not specified"
+  - id: rubric-quality
+    score: 52
+    pass: false
+    failures:
+      - "Ambiguity: ConfigMap reference contract not defined"
+      - "Ambiguity: CA reference API ownership (operator vs operand CRDs)"
+      - "Testability: no Given/When/Then scenarios"
+      - "Sizing: multiple deliverables bundled without phasing"
+refinement_applied: false
+notes: >-
+  No stage_evals YAML for validation; scored against validation-template.md rubric.
+  overall_status NEEDS_REVISION — no blockers; suitable for user approval to proceed
+  to specs.md with documented assumptions per scope-constraints.md.

@@ -1,0 +1,95 @@
+{
+  "round": 1,
+  "feature_name": "RFE-8685 — Custom Enterprise CA Bundle Integration",
+  "epic_key": "RFE-8685",
+  "patterns": [
+    {
+      "id": "PAT-001",
+      "description": "Agent conflates operator ESC API work with upstream SecretStore/ClusterSecretStore CRD or bindata changes",
+      "recurrence": "new",
+      "related_eval_ids": []
+    },
+    {
+      "id": "PAT-002",
+      "description": "Proxy-gated platform CA behavior (CNO inject) vs enterprise CA independence — A-011 matrix required",
+      "recurrence": "new",
+      "related_eval_ids": []
+    },
+    {
+      "id": "PAT-003",
+      "description": "Cross-namespace ConfigMap reference in API cannot be mounted directly; requires operand-namespace sync or same-ns constraint",
+      "recurrence": "new",
+      "related_eval_ids": []
+    },
+    {
+      "id": "PAT-004",
+      "description": "make test-apis requires regenerated CRD manifests before new API field tests pass",
+      "recurrence": "new",
+      "related_eval_ids": []
+    },
+    {
+      "id": "PAT-005",
+      "description": "CEL validation produces multi-error bracket messages; testsuite expectedError must match repo pattern",
+      "recurrence": "new",
+      "related_eval_ids": []
+    },
+    {
+      "id": "PAT-006",
+      "description": "CommonConfigs embedded in ESC and ESM causes codegen to update both CRDs when adding appConfig fields",
+      "recurrence": "new",
+      "related_eval_ids": []
+    }
+  ],
+  "issues": [
+    {
+      "id": "ISSUE-001",
+      "source_bug": "WFR-001",
+      "category": "story_formation",
+      "type": "non_functional",
+      "workflow_stage": "tasks",
+      "pattern_id": "PAT-004",
+      "pattern": "test-apis before manifests ordering",
+      "eval_implication": "Tasks must pair test-apis with manifests/codegen task or document prerequisite",
+      "evidence": ["evals/inputs/05-repo-prs.md", "openspec/changes/rfe-8685/implementation/task-reports/T1_2.md"]
+    },
+    {
+      "id": "ISSUE-002",
+      "source_bug": "WFR-002",
+      "category": "coding",
+      "type": "non_functional",
+      "workflow_stage": "implementation",
+      "pattern_id": "PAT-005",
+      "pattern": "testsuite CEL error format mismatch",
+      "eval_implication": "Code-gen eval for api-generate-tests: negative cases use bracket format when CEL present",
+      "evidence": ["evals/inputs/05-repo-prs.md"]
+    },
+    {
+      "id": "ISSUE-003",
+      "source_bug": "WFR-003",
+      "category": "design",
+      "type": "functional",
+      "workflow_stage": "plan",
+      "pattern_id": "PAT-003",
+      "pattern": "cross-namespace ConfigMap mount strategy",
+      "eval_implication": "Plan must document sync CM or same-namespace requirement",
+      "evidence": ["openspec/changes/rfe-8685/plan.md", "pkg/controller/external_secrets/configmap.go"]
+    },
+    {
+      "id": "ISSUE-004",
+      "source_bug": "WFR-004",
+      "category": "design",
+      "type": "non_functional",
+      "workflow_stage": "repo-assessment",
+      "pattern_id": "PAT-006",
+      "pattern": "CommonConfigs multi-CRD blast radius",
+      "eval_implication": "Repo-assessment lists all CRDs embedding CommonConfigs",
+      "evidence": ["config/crd/bases/operator.openshift.io_externalsecretsmanagers.yaml"]
+    }
+  ],
+  "summary": {
+    "design": 2,
+    "story_formation": 1,
+    "coding": 1,
+    "ops_docs": 0
+  }
+}

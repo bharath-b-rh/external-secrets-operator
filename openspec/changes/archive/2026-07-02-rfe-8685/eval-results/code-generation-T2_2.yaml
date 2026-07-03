@@ -1,0 +1,7 @@
+task_id: T2_2
+oape_command: verification-only
+evals_applied: []
+score_percent: null
+pass_count: 0
+total_count: 0
+note: "verification-only task; no code-generation eval cases"

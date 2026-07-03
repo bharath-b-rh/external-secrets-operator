@@ -1,0 +1,8 @@
+--- a/evals/refined-templates/validation-template.md
++++ b/evals/refined-templates/validation-template.md
+@@ operator vs upstream scope
++### Operator vs upstream CRD scope (CA features)
++
++Enterprise CA on `ExternalSecretsConfig.appConfig` is operator-owned (`operator.openshift.io`).
++Do not require upstream `external-secrets.io` SecretStore CRD or bindata changes for ESC-level trust.
++Upstream `caProvider` is per-store configuration — validate separately from operator mount path.

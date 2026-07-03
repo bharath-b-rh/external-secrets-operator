@@ -1,0 +1,135 @@
+version: 1
+feature: RFE-8685
+templates_dir: evals/refined-templates/
+rounds:
+  - round: 1
+    feature: RFE-8685
+    date: "2026-07-02"
+    eval_count: 19
+    patterns: [PAT-001, PAT-002, PAT-003, PAT-004, PAT-005, PAT-006]
+evals:
+  eval-r001-repo-001:
+    stage: repo-assessment
+    round: 1
+    patterns: [PAT-006]
+    source_issue_ids: [ISSUE-004]
+  eval-r001-repo-002:
+    stage: repo-assessment
+    round: 1
+    patterns: [PAT-002, PAT-003]
+    source_issue_ids: [ISSUE-003]
+  eval-r001-repo-003:
+    stage: repo-assessment
+    round: 1
+    patterns: [PAT-001]
+    source_issue_ids: []
+  eval-r001-const-001:
+    stage: constitution
+    round: 1
+    patterns: [PAT-001]
+    source_issue_ids: []
+  eval-r001-const-002:
+    stage: constitution
+    round: 1
+    patterns: [PAT-003]
+    source_issue_ids: [ISSUE-003]
+  eval-r001-const-003:
+    stage: constitution
+    round: 1
+    patterns: [PAT-004]
+    source_issue_ids: [ISSUE-001]
+  eval-r001-plan-001:
+    stage: plan
+    round: 1
+    patterns: [PAT-002, PAT-003]
+    source_issue_ids: [ISSUE-003]
+  eval-r001-plan-002:
+    stage: plan
+    round: 1
+    patterns: [PAT-001]
+    source_issue_ids: []
+  eval-r001-plan-003:
+    stage: plan
+    round: 1
+    patterns: [PAT-002]
+    source_issue_ids: []
+  eval-r001-tasks-001:
+    stage: tasks
+    round: 1
+    patterns: [PAT-004]
+    source_issue_ids: [ISSUE-001]
+  eval-r001-tasks-002:
+    stage: tasks
+    round: 1
+    patterns: [PAT-001]
+    source_issue_ids: []
+  eval-r001-tasks-003:
+    stage: tasks
+    round: 1
+    patterns: [PAT-002]
+    source_issue_ids: []
+  eval-r001-impl-001:
+    stage: implementation
+    round: 1
+    patterns: [PAT-003]
+    source_issue_ids: [ISSUE-003]
+  eval-r001-impl-002:
+    stage: implementation
+    round: 1
+    patterns: [PAT-002]
+    source_issue_ids: []
+  eval-r001-impl-003:
+    stage: implementation
+    round: 1
+    patterns: [PAT-002]
+    source_issue_ids: []
+  eval-r001-codegen-001:
+    stage: code-generation
+    round: 1
+    oape_command: api-generate
+    patterns: [PAT-006]
+    source_issue_ids: [ISSUE-004]
+  eval-r001-codegen-002:
+    stage: code-generation
+    round: 1
+    oape_command: api-generate-tests
+    patterns: [PAT-005]
+    source_issue_ids: [ISSUE-002]
+  eval-r001-codegen-003:
+    stage: code-generation
+    round: 1
+    oape_command: api-implement
+    patterns: [PAT-002, PAT-003]
+    source_issue_ids: [ISSUE-003]
+  eval-r001-codegen-004:
+    stage: code-generation
+    round: 1
+    oape_command: manual
+    patterns: [PAT-004]
+    source_issue_ids: [ISSUE-001]
+stage_eval_files:
+  repo-assessment:
+    path: evals/baseline/evals/repo-assessment/repo-assessment_eval.yaml
+    template: evals/refined-templates/repo-assessment-template.md
+    eval_count: 3
+  constitution:
+    path: evals/baseline/evals/constitution/constitution_eval.yaml
+    template: evals/refined-templates/constitution-template.md
+    eval_count: 3
+  plan:
+    path: evals/baseline/evals/plan/plan_eval.yaml
+    template: evals/refined-templates/plan-template.md
+    eval_count: 3
+  tasks:
+    path: evals/baseline/evals/tasks/tasks_eval.yaml
+    template: evals/refined-templates/tasks-template.md
+    eval_count: 3
+  implementation:
+    path: evals/baseline/evals/implementation/implementation_eval.yaml
+    template: evals/refined-templates/implementation-template.md
+    eval_count: 3
+  code-generation:
+    path: evals/baseline/evals/code-generation/code-generation_eval.yaml
+    template: null
+    eval_count: 4
+    note: Per-task code evals for /opsx-apply; cases tagged oape_command

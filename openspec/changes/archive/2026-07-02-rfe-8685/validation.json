@@ -1,0 +1,65 @@
+{
+  "metadata": {
+    "ticket_id": "RFE-8685",
+    "doc_type": "jira",
+    "pass_threshold": 80,
+    "output_mode": "json_only",
+    "weights_applied": {
+      "completeness": 0.6,
+      "quality": 0.4
+    }
+  },
+  "validation_results": {
+    "completeness_score": 58,
+    "quality_score": 52,
+    "overall_score": 56,
+    "overall_status": "NEEDS_REVISION",
+    "missing_elements": [
+      "User Personas / Actors: Only 'customer' is implied; no explicit roles (e.g., cluster admin configuring ExternalSecretsConfig vs application team authoring SecretStore)",
+      "Acceptance Criteria & Edge Cases: No Given/When/Then scenarios, no negative cases (invalid ConfigMap, missing CA, proxy-only vs custom CA coexistence), no upgrade/migration behavior",
+      "Scope Boundaries: Unclear whether changes are limited to downstream operator (ExternalSecretsConfig operand wiring) vs upstream operand CRDs (SecretStore/ClusterSecretStore CA fields); cert-manager Operator listed as affected but integration scope not defined",
+      "Dependencies: No explicit dependency on cluster proxy configuration, OCP trusted CA bundle injection mechanics, or minimum OpenShift/ESO versions",
+      "Operational semantics: No uninstall/reconcile behavior when CA reference is removed or ConfigMap is deleted"
+    ],
+    "quality_issues": [
+      {
+        "type": "Ambiguity",
+        "quote": "Adding an option to reference a ConfigMap containing the trusted CA certificates",
+        "suggestion": "Define the API field shape (name/namespace/key or well-known path), whether reference is cluster- or namespace-scoped, and which workloads receive the mount (controller only, webhook only, or both)."
+      },
+      {
+        "type": "Ambiguity",
+        "quote": "Extending the API to include a CA reference for server verification",
+        "suggestion": "Clarify whether the CA reference belongs on operator CRDs (ExternalSecretsConfig/ExternalSecretsManager), upstream SecretStore/ClusterSecretStore, or both; specify if this affects outbound TLS from the operand controller only or also provider connections initiated by SecretStore reconciliation."
+      },
+      {
+        "type": "Testability",
+        "quote": "Resolve the x509: certificate signed by unknown authority error",
+        "suggestion": "Add measurable acceptance criteria, e.g., 'Given a SecretStore targeting an internal vault signed by enterprise CA in ConfigMap X, When ExternalSecret sync runs, Then sync succeeds without x509 unknown authority errors and ESC reports Ready.'"
+      },
+      {
+        "type": "Testability",
+        "quote": "The operator only injects the OpenShift trusted CA bundle into the well-known path (/etc/pki/tls/certs) if a cluster-wide proxy is configured",
+        "suggestion": "State expected behavior when both cluster proxy CA injection and custom enterprise CA ConfigMap are configured: merge order, path layout, and whether custom CA supplements or replaces proxy-injected bundle."
+      },
+      {
+        "type": "Sizing",
+        "quote": "Extending the API... Adding an option to reference a ConfigMap... controller and webhook deployments... SecretStore and ClusterSecretStore",
+        "suggestion": "This spans operator API, operand deployment reconciliation, and upstream CRD surface. Consider splitting into operator CA injection (ExternalSecretsConfig) vs provider CA reference (SecretStore) if they are independently deliverable."
+      },
+      {
+        "type": "Consistency",
+        "quote": "Affected Packages: External Secrets Operator... CRDs: SecretStore and ClusterSecretStore... OCP Trusted CA Bundle Injection",
+        "suggestion": "Reconcile operator-owned vs operand-owned API boundaries: the OpenShift operator deploys upstream ESO but does not own SecretStore/ClusterSecretStore schema evolution on all branches. Align the spec with which layer this change targets on release-1.1."
+      }
+    ],
+    "blockers": [],
+    "non_blockers": [
+      "No explicit user personas or RBAC implications for who may reference enterprise CA ConfigMaps",
+      "Missing acceptance criteria and edge cases for ConfigMap lifecycle (update, delete, invalid PEM)",
+      "Unclear interaction between proxy-triggered OCP trusted CA injection and custom enterprise CA",
+      "cert-manager Operator mentioned as affected component without defined integration requirement",
+      "No upgrade semantics for clusters already using unsupported manual volume workarounds"
+    ]
+  }
+}

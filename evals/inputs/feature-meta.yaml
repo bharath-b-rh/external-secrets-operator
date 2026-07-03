@@ -1,0 +1,5 @@
+feature_name: RFE-8685 — Custom Enterprise CA Bundle Integration
+epic_key: RFE-8685
+target_repo: https://github.com/openshift/external-secrets-operator
+change_dir: openspec/changes/rfe-8685
+branch_pin: release-1.1

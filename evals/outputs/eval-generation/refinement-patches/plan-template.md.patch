@@ -1,0 +1,9 @@
+--- a/evals/refined-templates/plan-template.md
++++ b/evals/refined-templates/plan-template.md
+@@ trusted CA planning
++### Trusted CA planning (A-011)
++
++- Resolve proxy × enterprise four-state volume matrix (neither / enterprise only / proxy only / both projected).
++- Cross-namespace ConfigMap refs require operand-namespace sync before mount.
++- Enterprise mounts limited to controller and webhook deployments — not cert-controller.
++- Store-level `caProvider` (A-007) is docs-only; do not plan bindata CRD refresh for ESC field.

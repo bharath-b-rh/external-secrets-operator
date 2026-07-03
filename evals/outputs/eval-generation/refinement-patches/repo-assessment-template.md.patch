@@ -1,0 +1,11 @@
+--- a/evals/refined-templates/repo-assessment-template.md
++++ b/evals/refined-templates/repo-assessment-template.md
+@@ -4.5 section
++### 4.6 Trusted CA / TLS trust baseline
++
++Document pre-feature behavior for platform and enterprise CA:
++
++- **Platform CA:** CNO-injected `external-secrets-trusted-ca-bundle` ConfigMap; mount at `/etc/pki/tls/certs`; historically proxy-gated via `getProxyConfiguration`.
++- **Enterprise CA:** Absent on ESC `CommonConfigs` before feature; upstream `caProvider` on SecretStore CRDs is separate scope.
++- **Key files:** `pkg/controller/external_secrets/configmap.go`, `deployments.go`.
++- **CommonConfigs blast radius:** Fields on `CommonConfigs` regenerate both ESC and ESM CRDs.
