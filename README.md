@@ -146,6 +146,25 @@ For e2e tests, including prerequisites and suite-specific commands (e.g. label f
 make test-e2e E2E_GINKGO_LABEL_FILTER="<label-filter>"
 ```
 
+## AI-assisted development (OpenSpec agile workflow)
+
+This repository includes the **openspec-agile-workflow** distribution for gated, Jira-driven, spec-first development with Cursor slash commands (`/opsx-new`, `/opsx-continue`, `/opsx-apply`, and related OAPE commands).
+
+| Resource | Purpose |
+|----------|---------|
+| [docs/openspec-agile-workflow.md](docs/openspec-agile-workflow.md) | Full guide: devcontainer, commands, pipeline, eval loop, re-install |
+| `AGENTS.md` | Operator-specific agent routing and verification matrix |
+| `constitution.md` | Non-negotiable architectural guardrails |
+| `.devcontainer/` | Go + Node + OpenSpec CLI (reopen in container) |
+
+**Quick start:** open in the devcontainer, then in Cursor chat run `/opsx-new PROJ-123` and tell the agent to **use this as the working directory** (working-folder mode).
+
+Validate the installed schema:
+
+```sh
+openspec schema validate openspec-agile-workflow
+```
+
 ## Contributing
 We welcome contributions from the community! To contribute:
 
