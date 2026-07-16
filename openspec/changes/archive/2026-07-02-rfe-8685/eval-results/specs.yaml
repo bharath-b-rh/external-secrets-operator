@@ -1,0 +1,13 @@
+artifact_id: specs
+artifact_path: openspec/changes/rfe-8685/specs.md
+stage: specs
+stage_eval_file: null
+gate: skip
+scored_at: "2026-07-02T09:15:00Z"
+overall_score: null
+overall_pass: null
+cases: []
+refinement_applied: false
+notes: >-
+  Specs artifact uses gate: skip per artifact-eval-map.yaml.
+  No stage eval cases; evaluation report provides gap analysis and quality assessment only.

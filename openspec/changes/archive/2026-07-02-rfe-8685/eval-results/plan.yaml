@@ -1,0 +1,13 @@
+artifact_id: plan
+artifact_path: openspec/changes/rfe-8685/plan.md
+stage: plan
+stage_eval_file: evals/plan_eval.yaml
+scored_at: "2026-07-02T10:15:00Z"
+overall_score: 100
+overall_pass: true
+cases: []
+refinement_applied: false
+notes: >-
+  plan_eval.yaml defines evals: [] (empty). Manual template check: §0-§8 complete;
+  A-007 and A-011 resolved in §1; operator-first phases; store caProvider docs-only;
+  FR/US mapped in §6 verification matrix; AgentRoutingMode PROVIDED with AGENTS.md agents.

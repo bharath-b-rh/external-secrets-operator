@@ -1,0 +1,60 @@
+stage: implementation
+template: evals/refined-templates/implementation-template.md
+artifact: code + implementation reports
+version: 1
+eval_count: 3
+evals:
+  - id: eval-r001-impl-001
+    round: 1
+    stage: implementation
+    source_issue_ids: [ISSUE-003]
+    patterns: [PAT-003]
+    input_refs:
+      - evals/inputs/05-repo-prs.md
+    prompt: |
+      Implementation syncs cross-namespace enterprise CM to operand namespace before mount.
+    assertions:
+      must_mention:
+        - ensureEnterpriseTrustedCAConfigMap
+        - external-secrets-additional-trusted-ca
+      must_not_violate_non_goals:
+        - write user ConfigMap CA data
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 80
+
+  - id: eval-r001-impl-002
+    round: 1
+    stage: implementation
+    source_issue_ids: []
+    patterns: [PAT-002]
+    input_refs:
+      - evals/inputs/05-repo-prs.md
+    prompt: |
+      Implementation covers A-011 four-state volume matrix including projected volume.
+    assertions:
+      must_mention:
+        - updateOperandTrustedCAVolumes
+        - Projected
+      must_pass_make_targets:
+        - go test ./pkg/controller/external_secrets/...
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 80
+
+  - id: eval-r001-impl-003
+    round: 1
+    stage: implementation
+    source_issue_ids: []
+    patterns: [PAT-002]
+    input_refs:
+      - evals/inputs/04-user-stories.md
+    prompt: |
+      Missing enterprise ConfigMap sets Degraded via ConfigurationError.
+    assertions:
+      must_mention:
+        - ConfigurationError
+        - Degraded
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 80

@@ -1,0 +1,4 @@
+--- a/evals/refined-templates/tasks-template.md
++++ b/evals/refined-templates/tasks-template.md
+@@ API verification pairing
++**Prerequisite:** `make test-apis` for new CRD fields requires `make manifests` (or full codegen) first — stale CRD yields `unknown field` failures.

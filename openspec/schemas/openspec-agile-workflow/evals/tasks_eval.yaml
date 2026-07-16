@@ -1,0 +1,59 @@
+stage: tasks
+template: templates/tasks-template.md
+artifact: tasks.md
+version: 1
+eval_count: 3
+evals:
+  - id: eval-r001-tasks-001
+    round: 1
+    stage: tasks
+    source_issue_ids: [ISSUE-001]
+    patterns: [PAT-004]
+    input_refs:
+      - evals/inputs/05-repo-prs.md
+    prompt: |
+      Tasks must pair make test-apis with manifests/codegen — not run test-apis on stale CRD.
+    assertions:
+      must_mention:
+        - make test-apis
+        - make manifests
+      must_match_task_payload: true
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 80
+
+  - id: eval-r001-tasks-002
+    round: 1
+    stage: tasks
+    source_issue_ids: []
+    patterns: [PAT-001]
+    input_refs:
+      - evals/inputs/02-jira-epic.md
+    prompt: |
+      Tasks forbid bindata/upstream external-secrets.io CRD refresh for ESC enterprise CA field.
+    assertions:
+      must_not_use:
+        - update-operand-manifests
+      must_mention:
+        - additionalTrustedCAConfigMapRef
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 80
+
+  - id: eval-r001-tasks-003
+    round: 1
+    stage: tasks
+    source_issue_ids: []
+    patterns: [PAT-002]
+    input_refs:
+      - evals/inputs/04-user-stories.md
+    prompt: |
+      Tasks include controller volume projection (T3_1) and status/tests (T4_1) for A-011.
+    assertions:
+      must_mention:
+        - T3_1
+        - T4_1
+        - OperatorController_Agent
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 80

@@ -1,0 +1,95 @@
+stage: code-generation
+artifact: fork working copy (code + tests)
+version: 1
+eval_count: 4
+oape_commands:
+  - api-generate
+  - api-generate-tests
+  - api-implement
+  - manual
+  - any
+evals:
+  - id: eval-r001-codegen-001
+    round: 1
+    stage: code-generation
+    oape_command: api-generate
+    source_issue_ids: [ISSUE-004]
+    patterns: [PAT-006]
+    input_refs:
+      - evals/inputs/05-repo-prs.md
+    prompt: |
+      API field additionalTrustedCAConfigMapRef on CommonConfigs with kubebuilder validation and CEL.
+    assertions:
+      must_use_pattern:
+        - AdditionalTrustedCAConfigMapRef
+        - XValidation
+      files_must_exist:
+        - api/v1alpha1/meta.go
+      must_pass_make_targets:
+        - make generate
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 85
+
+  - id: eval-r001-codegen-002
+    round: 1
+    stage: code-generation
+    oape_command: api-generate-tests
+    source_issue_ids: [ISSUE-002]
+    patterns: [PAT-005]
+    input_refs:
+      - evals/inputs/05-repo-prs.md
+    prompt: |
+      Negative testsuite cases for required fields use CEL multi-error bracket expectedError format.
+    assertions:
+      must_include_tests:
+        - additionalTrustedCAConfigMapRef
+      must_match_task_payload: true
+      must_pass_make_targets:
+        - make test-apis
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 85
+
+  - id: eval-r001-codegen-003
+    round: 1
+    stage: code-generation
+    oape_command: api-implement
+    source_issue_ids: [ISSUE-003]
+    patterns: [PAT-002, PAT-003]
+    input_refs:
+      - evals/inputs/05-repo-prs.md
+    prompt: |
+      Controller implements A-011 volume matrix; enterprise mounts only on controller and webhook assets.
+    assertions:
+      must_use_pattern:
+        - buildOperandTrustedCAVolume
+        - isOperandTrustedCAMountSupported
+      must_not_use:
+        - SSA
+      must_not_violate_non_goals:
+        - cert-controller enterprise mount
+      must_pass_make_targets:
+        - go test ./pkg/controller/external_secrets/...
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 85
+
+  - id: eval-r001-codegen-004
+    round: 1
+    stage: code-generation
+    oape_command: manual
+    source_issue_ids: [ISSUE-001]
+    patterns: [PAT-004]
+    input_refs:
+      - evals/inputs/05-repo-prs.md
+    prompt: |
+      Codegen task runs manifests before API integration tests for new CRD fields.
+    assertions:
+      must_pass_make_targets:
+        - make manifests
+      files_must_exist:
+        - config/crd/bases/operator.openshift.io_externalsecretsconfigs.yaml
+    scoring:
+      method: weighted_checklist
+      pass_threshold: 85

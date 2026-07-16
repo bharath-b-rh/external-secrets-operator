@@ -1,0 +1,13 @@
+round: 1
+baseline_version: "1.0.0"
+last_feature: RFE-8685
+last_completed: "2026-07-02"
+
+history:
+  - round: 1
+    feature: RFE-8685
+    date: "2026-07-02"
+    eval_count: 19
+    patterns_added: [PAT-001, PAT-002, PAT-003, PAT-004, PAT-005, PAT-006]
+    templates_patched: 4
+    snapshot: evals/baseline/rounds/round-1/

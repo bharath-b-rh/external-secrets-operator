@@ -1,0 +1,7 @@
+task_id: T3_1
+oape_command: api-implement
+evals_applied: []
+score_percent: null
+pass_count: 0
+total_count: 0
+note: "evals/code-generation_eval.yaml contains no cases for api-implement; verification via go build/vet"

@@ -1,0 +1,13 @@
+artifact_id: tasks
+artifact_path: openspec/changes/rfe-8685/tasks.md
+stage: tasks
+stage_eval_file: evals/tasks_eval.yaml
+scored_at: "2026-07-02T10:45:00Z"
+overall_score: 100
+overall_pass: true
+cases: []
+refinement_applied: false
+notes: >-
+  tasks_eval.yaml defines evals: [] (empty). Manual checklist: §0-§5 complete;
+  13 tasks (T6_1 optional); impl+verify paired per phase; AgentRoutingMode PROVIDED;
+  additionalTrustedCAConfigMapRef used; no upstream CRD/bindata tasks; Phase 6 optional.
